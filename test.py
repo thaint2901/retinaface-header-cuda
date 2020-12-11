@@ -22,13 +22,13 @@ width = 960
 height = 540
 resize = 0.5
 nms = 0.4
-while True:
+# while True:
 # for _ in range(5):
-    t0 = timeit.default_timer()
-    scores, boxes, landms = decode_cuda(loc.float(), conf.float(), landms.float(), priors.view(-1).tolist(), width, height, resize, threshold, top_n)
-    t1 = timeit.default_timer()
+t0 = timeit.default_timer()
+scores, boxes, landms = decode_cuda(loc.float(), conf.float(), landms.float(), priors.view(-1).tolist(), width, height, resize, threshold, top_n)
+t1 = timeit.default_timer()
 
-    nms_scores, nms_boxes, nms_landms = nms_cuda(scores.float(), boxes.float(), landms.float(), nms, ndetections)
-    print(t1-t0)
-    # print(nms_boxes.cpu())
+nms_scores, nms_boxes, nms_landms = nms_cuda(scores.float(), boxes.float(), landms.float(), nms, ndetections)
+print(t1-t0)
+print(scores.cpu())
 

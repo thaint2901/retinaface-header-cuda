@@ -18,16 +18,31 @@
 namespace retinaface {
 namespace cuda {
 
+//Softmax->implemented for not saturating
+__global__ void softmax_kernel(const float *in, float *out, int num_elem) {
+    int idx = threadIdx.x + blockIdx.x*blockDim.x;
+    if (idx >= num_elem) return;
+
+    // printf("%4.2f \n", in[idx]);
+
+    for (int k = 0; k < 2; ++k) {
+        float conf1 = in[idx + k * num_elem * 2];
+        float conf2 = in[idx + k * num_elem * 2 + num_elem];
+        out[idx + k * num_elem * 2 + num_elem] = expf(conf2) / (expf(conf1) + expf(conf2));
+        out[idx + k * num_elem * 2] = 0.0f;
+    }
+}
+
 int decode(int batch_size,
-    const void *const *inputs, void *const *outputs, int num_anchors,
-    const std::vector<float> &anchors, int width, int height, float resize, float score_thresh, int top_n,
+    const void *const *inputs, void *const *outputs, size_t num_anchors,
+    const std::vector<float> &anchors, int width, int height, size_t f_width, size_t f_height, float resize, float score_thresh, int top_n,
     void *workspace, size_t workspace_size, cudaStream_t stream) {
     
     /* height, width: net_inshape
     resize = 0.5, 1920 / 960
     */
     
-    int scores_size = num_anchors;
+    int scores_size = num_anchors * 2;
 
     if (!workspace || !workspace_size) {
         // scratch space size cub style
@@ -37,6 +52,7 @@ int decode(int batch_size,
         workspace_size += get_size_aligned<int>(scores_size);      // indices_sorted
         workspace_size += get_size_aligned<float>(scores_size);    // scores
         workspace_size += get_size_aligned<float>(scores_size);    // scores_sorted
+        workspace_size += get_size_aligned<float>(scores_size);    // scores_softmax
 
         size_t temp_size_flag = 0;
         cub::DeviceSelect::Flagged((void *)nullptr, temp_size_flag,
@@ -60,18 +76,30 @@ int decode(int batch_size,
     auto indices_sorted = get_next_ptr<int>(scores_size, workspace, workspace_size);
     auto scores = get_next_ptr<float>(scores_size, workspace, workspace_size);
     auto scores_sorted = get_next_ptr<float>(scores_size, workspace, workspace_size);
+    auto scores_softmax = get_next_ptr<float>(scores_size, workspace, workspace_size);
+    // cudaMemset(scores_softmax + scores_size, 0, sizeof(float));
+    int thread_count;
+    int num_anchor = 2;
 
     for (int batch = 0; batch < batch_size; batch++) {
         auto in_scores = static_cast<const float *>(inputs[0]) + batch * scores_size;
-        auto in_boxes = static_cast<const float *>(inputs[1]) + batch * scores_size * 4;
-        auto in_landms = static_cast<const float *>(inputs[2]) + batch * scores_size * 10;
+        // thrust::copy(on_stream, in_scores, in_scores + scores_size, scores_softmax);
+        // cudaMemcpyAsync(scores_softmax, in_scores, scores_size * sizeof *in_scores, cudaMemcpyDeviceToDevice, stream);
+        auto in_boxes = static_cast<const float *>(inputs[1]) + batch * (scores_size / 2) * 4;
+        auto in_landms = static_cast<const float *>(inputs[2]) + batch * (scores_size / 2) * 10;
 
         auto out_scores = static_cast<float *>(outputs[0]) + batch * top_n;
         auto out_boxes = static_cast<float4 *>(outputs[1]) + batch * top_n;
         auto out_landms = static_cast<float10 *>(outputs[2]) + batch * top_n;
 
+        // softmax
+        const int thread_count_ = 1024;
+        int num_elem = f_height * f_width;
+        thread_count = (num_elem < thread_count_) ? num_elem : thread_count_;
+        softmax_kernel<<<(num_elem + thread_count - 1) / thread_count, thread_count, 0, stream>>>(in_scores, scores_softmax, num_elem);
+
         // Discard scores below threshold
-        thrust::transform(on_stream, in_scores, in_scores + scores_size, flags, thrust::placeholders::_1 > score_thresh);
+        thrust::transform(on_stream, scores_softmax, scores_softmax + scores_size, flags, thrust::placeholders::_1 > score_thresh);
 
         int *num_selected = reinterpret_cast<int *>(indices_sorted);
         cub::DeviceSelect::Flagged(workspace, workspace_size,
@@ -84,7 +112,8 @@ int decode(int batch_size,
         auto indices_filtered = indices;
         if (num_detections > top_n) {
             // lấy score theo indices đã chọn ở trên, sort index theo score, đẩy vào scores
-            thrust::gather(on_stream, indices, indices + num_detections, in_scores, scores);
+            thrust::gather(on_stream, indices, indices + num_detections, scores_softmax, scores);
+            // sort các giá trị trong scores đẩy vào scores_sorted để lấy n giá trị
             cub::DeviceRadixSort::SortPairsDescending(workspace, workspace_size,
                 scores, scores_sorted, indices, indices_sorted, num_detections, 0, sizeof(*scores)*8, stream);
             indices_filtered = indices_sorted;
@@ -96,27 +125,36 @@ int decode(int batch_size,
         thrust::transform(on_stream, indices_filtered, indices_filtered + num_detections,
             thrust::make_zip_iterator(thrust::make_tuple(out_scores, out_boxes, out_landms)),
             [=] __device__ (int i) {
+                int x = i % f_width;
+                int y = (i / f_width) % f_height;
+                int a = (i / 2 / f_height / f_width) % num_anchor;
+
                 float4 box = float4{
-                    in_boxes[i * 4 + 0],
-                    in_boxes[i * 4 + 1],
-                    in_boxes[i * 4 + 2],
-                    in_boxes[i * 4 + 3]
+                    in_boxes[((a * 4 + 0) * f_height + y) * f_width + x],
+                    in_boxes[((a * 4 + 1) * f_height + y) * f_width + x],
+                    in_boxes[((a * 4 + 2) * f_height + y) * f_width + x],
+                    in_boxes[((a * 4 + 3) * f_height + y) * f_width + x]
                 };
                 float10 landm = float10{
-                    in_landms[i * 10 + 0],
-                    in_landms[i * 10 + 1],
-                    in_landms[i * 10 + 2],
-                    in_landms[i * 10 + 3],
-                    in_landms[i * 10 + 4],
-                    in_landms[i * 10 + 5],
-                    in_landms[i * 10 + 6],
-                    in_landms[i * 10 + 7],
-                    in_landms[i * 10 + 8],
-                    in_landms[i * 10 + 9]
+                    in_landms[((a * 10 + 0) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 1) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 2) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 3) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 4) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 5) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 6) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 7) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 8) * f_height + y) * f_width + x],
+                    in_landms[((a * 10 + 9) * f_height + y) * f_width + x]
                 };
 
                 if (has_anchors) {
-                    float *d = anchors_d + 4*i;
+                    // float *d = anchors_d + 4 * (2 * ((y * width) + x) + a);
+                    float d[4];
+                    d[0] = ((float)x + 0.5) / f_width;
+                    d[1] = ((float)y + 0.5) / f_height;
+                    d[2] = anchors_d[a] / width;
+                    d[3] = anchors_d[a] / height;
 
                     float x1 = d[0] + box.x * 0.1f * d[2];
                     float y1 = d[1] + box.y * 0.1f * d[3];
@@ -153,7 +191,7 @@ int decode(int batch_size,
                     };
                 }
 
-                return thrust::make_tuple(in_scores[i], box, landm);
+                return thrust::make_tuple(scores_softmax[i], box, landm);
             });
 
         // Zero-out unused scores

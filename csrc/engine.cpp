@@ -1,6 +1,6 @@
 #include "engine.h"
 #include "plugins/DecodePlugin.h"
-#include "plugins/NMSPlugin.h"
+// #include "plugins/NMSPlugin.h"
 
 #include <iostream>
 #include <fstream>
@@ -64,21 +64,22 @@ Engine::~Engine() {
 }
 
 Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dynamic_batch_opts,
-    float score_thresh, float resize, int top_n, const vector<float> &anchors,
+    float score_thresh, float resize, int top_n, const vector<vector<float>>&anchors,
     float nms_thresh, int detections_per_im,
     bool verbose, size_t workspace_size) {
 
     Logger logger(verbose);
+    _runtime = createInferRuntime(logger);
 
     // Create builder
     auto builder = createInferBuilder(logger);
-    auto builderConfig = builder->createBuilderConfig();
+    const auto builderConfig = builder->createBuilderConfig();
     builderConfig->setFlag(BuilderFlag::kFP16);
     builderConfig->setMaxWorkspaceSize(workspace_size);
 
     // Parse ONNX
-    const auto explicitBatch = 1U << static_cast<uint32_t>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-    auto network = builder->createNetworkV2(explicitBatch);
+    const auto flags = 1U << static_cast<int>(NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+    auto network = builder->createNetworkV2(flags);
     auto parser = createParser(*network, logger);
     parser->parse(onnx_model, onnx_size);
 
@@ -99,23 +100,35 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
     
     // Add decode plugins
     cout << "Building accelerated plugins..." << endl;
-    // vector<ITensor *> scores, boxes, landms;
+    vector<DecodePlugin> decodePlugins;
+    vector<ITensor *> scores, boxes, landms;
     auto nbOutputs = network->getNbOutputs();
-
-    auto boxOutput = network->getOutput(0);
-    auto scoreOutput = network->getOutput(1);
-    auto landmOutput = network->getOutput(2);
     int height = inputDims.d[2];
     int width = inputDims.d[3];
-    int num_anchors = anchors.size() / 4;
-    auto decodePlugin = DecodePlugin(score_thresh, top_n, anchors, resize, height, width, num_anchors);
-    vector<ITensor *> inputs = {scoreOutput, boxOutput, landmOutput};
-    auto layer_decode = network->addPluginV2(inputs.data(), inputs.size(), decodePlugin);
 
-    vector<ITensor *> decode = {layer_decode->getOutput(0), layer_decode->getOutput(1), layer_decode->getOutput(2)};
-    // scores.push_back(layer_decode->getOutput(0));
-    // boxes.push_back(layer_decode->getOutput(1));
-    // landms.push_back(layer_decode->getOutput(2));
+    // for (int i = 0; i < nbOutputs / 3; i++) {
+    //     auto boxOutput = network->getOutput(i*3);
+    //     auto scoreOutput = network->getOutput(i*3+1);
+    //     auto landmOutput = network->getOutput(i*3 + 2);
+    //     scores.push_back(scoreOutput);
+    //     boxes.push_back(boxOutput);
+    //     landms.push_back(landmOutput);
+    // }
+
+    for (int i = 0; i < nbOutputs / 3; i++) {
+        auto boxOutput = network->getOutput(i);
+        auto scoreOutput = network->getOutput(nbOutputs / 3 + i);
+        auto landmOutput = network->getOutput(2 * nbOutputs / 3 + i);
+        auto decodePlugin = DecodePlugin(score_thresh, top_n, anchors[i], resize, height, width);
+        decodePlugins.push_back(decodePlugin); 
+        vector<ITensor *> inputs = {scoreOutput, boxOutput, landmOutput};
+        auto layer_decode = network->addPluginV2(inputs.data(), inputs.size(), decodePlugin);
+
+        // vector<ITensor *> decode = {layer_decode->getOutput(0), layer_decode->getOutput(1), layer_decode->getOutput(2)};
+        scores.push_back(layer_decode->getOutput(0));
+        boxes.push_back(layer_decode->getOutput(1));
+        landms.push_back(layer_decode->getOutput(2));
+    }
 
     // Cleanup outputs
     for (int i = 0; i < nbOutputs; i++) {
@@ -123,12 +136,12 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
         network->unmarkOutput(*output);
     }
 
-    // // Concat tensors from each feature map
-    // vector<ITensor *> concat;
-    // for (auto tensors : {scores, boxes, landms}) {
-    //     auto layer = network->addConcatenation(tensors.data(), tensors.size());
-    //     concat.push_back(layer->getOutput(0));
-    // }
+    // Concat tensors from each feature map
+    vector<ITensor *> concat;
+    for (auto tensors : {scores, boxes, landms}) {
+        auto layer = network->addConcatenation(tensors.data(), tensors.size());
+        concat.push_back(layer->getOutput(0));
+    }
 
     // // Add NMS plugin
     // size_t count = top_n;
@@ -136,8 +149,8 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
     // auto layer_nms = network->addPluginV2(concat.data(), concat.size(), nmsPlugin);
 
     vector<string> names = {"scores", "boxes", "landms"};
-    for (int i = 0; i < layer_decode->getNbOutputs(); i++) {
-        auto output = layer_decode->getOutput(i);
+    for (int i = 0; i < 3; i++) {
+        auto output = concat[i];
         network->markOutput(*output);
         output->setName(names[i].c_str());
     }
@@ -146,19 +159,19 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
     cout << "Applying optimizations and building TRT CUDA engine..." << endl;
     _engine = builder->buildEngineWithConfig(*network, *builderConfig);
 
-    // int numCreators = 0;
-    // nvinfer1::IPluginCreator* const* tmpList = getPluginRegistry()->getPluginCreatorList(&numCreators);
+    int numCreators = 0;
+    nvinfer1::IPluginCreator* const* tmpList = getPluginRegistry()->getPluginCreatorList(&numCreators);
 
-    // for (int k = 0; k < numCreators; ++k)
-    // {
-    //     if (!tmpList[k])
-    //     {
-    //         std::cout << "Plugin Creator for plugin " << k << " is a nullptr." << std::endl;
-    //         continue;
-    //     }
-    //     std::string pluginName = tmpList[k]->getPluginName();
-    //     std::cout << k << ": " << pluginName << std::endl;
-    // }
+    for (int k = 0; k < numCreators; ++k)
+    {
+        if (!tmpList[k])
+        {
+            std::cout << "Plugin Creator for plugin " << k << " is a nullptr." << std::endl;
+            continue;
+        }
+        std::string pluginName = tmpList[k]->getPluginName();
+        std::cout << k << ": " << pluginName << std::endl;
+    }
 
     // Housekeeping
     parser->destroy();

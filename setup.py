@@ -10,6 +10,7 @@ setup(
         extra_compile_args={
             'cxx': ['-std=c++14', '-O2', '-Wall'],
             'nvcc': [
+                '-g','-G',
                 '-std=c++14', '--expt-extended-lambda', '--use_fast_math', '-Xcompiler', '-Wall',
                 '-gencode=arch=compute_60,code=sm_60', '-gencode=arch=compute_61,code=sm_61',
                 '-gencode=arch=compute_70,code=sm_70', '-gencode=arch=compute_72,code=sm_72',

@@ -1,6 +1,7 @@
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 
+#include "engine.h"
 #include "cuda/decode.h"
 #include "cuda/nms.h"
 
@@ -18,7 +19,10 @@ vector<at::Tensor> decode(at::Tensor box_head, at::Tensor conf_head, at::Tensor 
     CHECK_INPUT(landm_head);
 
     int batch = conf_head.size(0);
-    int num_anchors = anchors.size() / 4;
+    int f_height = conf_head.size(2);
+    int f_width = conf_head.size(3);
+    // int num_anchors = anchors.size() / 4;
+    int num_anchors = f_height * f_width * 2;
     auto options = conf_head.options();
 
     auto scores = at::zeros({batch, top_n}, options);
@@ -29,11 +33,11 @@ vector<at::Tensor> decode(at::Tensor box_head, at::Tensor conf_head, at::Tensor 
     vector<void *> outputs = {scores.data_ptr(), boxes.data_ptr(), landms.data_ptr()};
 
     // Create scratch buffer
-    int size = retinaface::cuda::decode(batch, nullptr, nullptr, num_anchors, anchors, width, height, resize, score_thresh, top_n, nullptr, 0, nullptr);
+    int size = retinaface::cuda::decode(batch, nullptr, nullptr, num_anchors, anchors, width, height, f_width, f_height, resize, score_thresh, top_n, nullptr, 0, nullptr);
     auto scratch = at::zeros({size}, options.dtype(torch::kUInt8));
 
     // Decode boxes
-    retinaface::cuda::decode(batch, inputs.data(), outputs.data(), num_anchors, anchors, width, height, resize, score_thresh, top_n,
+    retinaface::cuda::decode(batch, inputs.data(), outputs.data(), num_anchors, anchors, width, height, f_width, f_height, resize, score_thresh, top_n,
         scratch.data_ptr(), size, at::cuda::getCurrentCUDAStream());
 
     return {scores, boxes, landms};

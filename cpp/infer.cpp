@@ -85,24 +85,25 @@ int main(int argc, char *argv[]) {
 	cudaFree(landms_d);
 
     for (int i = 0; i < num_det; i++) {
-		// Show results over confidence threshold
-		if (scores[i] >= 0.3f) {
-			float x1 = boxes[i*4+0];
-			float y1 = boxes[i*4+1];
-			float x2 = boxes[i*4+2];
-			float y2 = boxes[i*4+3];
-			cout << "Found box {" << x1 << ", " << y1 << ", " << x2 << ", " << y2
-				<< "} with score " << scores[i] << endl;
+		cout << scores[i] << endl;
+		// // Show results over confidence threshold
+		// if (scores[i] >= 0.3f) {
+		// 	float x1 = boxes[i*4+0];
+		// 	float y1 = boxes[i*4+1];
+		// 	float x2 = boxes[i*4+2];
+		// 	float y2 = boxes[i*4+3];
+		// 	cout << "Found box {" << x1 << ", " << y1 << ", " << x2 << ", " << y2
+		// 		<< "} with score " << scores[i] << endl;
 
-			// Draw bounding box on image
-			cv::rectangle(image, Point(x1, y1), Point(x2, y2), cv::Scalar(0, 255, 0));
-		}
+		// 	// Draw bounding box on image
+		// 	cv::rectangle(image, Point(x1, y1), Point(x2, y2), cv::Scalar(0, 255, 0));
+		// }
 	}
 
-	// Write image
-	string out_file = argc == 4 ? string(argv[3]) : "detections.png";
-	cout << "Saving result to " << out_file << endl;
-	imwrite(out_file, image);
+	// // Write image
+	// string out_file = argc == 4 ? string(argv[3]) : "detections.png";
+	// cout << "Saving result to " << out_file << endl;
+	// imwrite(out_file, image);
 
     return 0;
 }

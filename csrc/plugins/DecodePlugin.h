@@ -20,6 +20,7 @@ class DecodePlugin : public IPluginV2DynamicExt {
     int _top_n;
     std::vector<float> _anchors;
     float _resize;
+    int _step;
     int _height;
     int _width;
 
@@ -41,6 +42,7 @@ protected:
             _anchors.push_back(val);
         }
         read(d, _resize);
+        read(d, _step);
         read(d, _height);
         read(d, _width);
         read(d, _f_height);
@@ -50,7 +52,7 @@ protected:
 
     size_t getSerializationSize() const override {
         return sizeof(_score_thresh) + sizeof(_top_n)
-            + sizeof(size_t) + sizeof(float) * _anchors.size() + sizeof(_resize)
+            + sizeof(size_t) + sizeof(float) * _anchors.size() + sizeof(_resize) + sizeof(_step)
             + sizeof(_height) + sizeof(_width) + sizeof(_f_height) + sizeof(_f_width) + sizeof(_num_anchors);
     }
 
@@ -63,6 +65,7 @@ protected:
             write(d, val);
         }
         write(d, _resize);
+        write(d, _step);
         write(d, _height);
         write(d, _width);
         write(d, _f_height);
@@ -71,13 +74,13 @@ protected:
     }
 
 public:
-    DecodePlugin(float score_thresh, int top_n, std::vector<float> const& anchors, int resize, int height, int width)
-        : _score_thresh(score_thresh), _top_n(top_n), _anchors(anchors), _resize(resize),
+    DecodePlugin(float score_thresh, int top_n, std::vector<float> const& anchors, float resize, int step, int height, int width)
+        : _score_thresh(score_thresh), _top_n(top_n), _anchors(anchors), _resize(resize), _step(step),
         _height(height), _width(width) {}
 
-    DecodePlugin(float score_thresh, int top_n, std::vector<float> const& anchors, int resize, int height, int width,
+    DecodePlugin(float score_thresh, int top_n, std::vector<float> const& anchors, float resize, int step, int height, int width,
     size_t f_height, size_t f_width, size_t num_anchors)
-        : _score_thresh(score_thresh), _top_n(top_n), _anchors(anchors), _resize(resize),
+        : _score_thresh(score_thresh), _top_n(top_n), _anchors(anchors), _resize(resize), _step(step),
         _height(height), _width(width), _f_height(f_height), _f_width(f_width), _num_anchors(num_anchors) {}
 
 // Sử dụng khi load engine
@@ -132,7 +135,7 @@ public:
     {
         if (size < 0) {
         size = cuda::decode(inputs->dims.d[0], nullptr, nullptr,
-            _num_anchors, _anchors, _width, _height, _f_width, _f_height, _resize, _score_thresh, _top_n, 
+            _num_anchors, _anchors, _width, _height, _f_width, _f_height, _resize, _step, _score_thresh, _top_n, 
             nullptr, 0, nullptr);
         }
         return size;
@@ -144,7 +147,7 @@ public:
     {
         
         return cuda::decode(inputDesc->dims.d[0], inputs, outputs,
-        _num_anchors, _anchors, _width, _height, _f_width, _f_height, _resize, _score_thresh, _top_n,
+        _num_anchors, _anchors, _width, _height, _f_width, _f_height, _resize, _step, _score_thresh, _top_n,
         workspace, getWorkspaceSize(inputDesc, 3, outputDesc, 3), stream);
         
     }
@@ -180,7 +183,7 @@ public:
     }
 
     IPluginV2DynamicExt *clone() const  {
-        return new DecodePlugin(_score_thresh, _top_n, _anchors, _resize, _height, _width, _f_height, _f_width, 
+        return new DecodePlugin(_score_thresh, _top_n, _anchors, _resize, _step, _height, _width, _f_height, _f_width, 
         _num_anchors);
     }
     

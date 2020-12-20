@@ -40,9 +40,11 @@ int main(int argc, char *argv[]) {
     anchors = {{10.0, 20.0},
             {32.0, 64.0},
             {128.0, 256.0}};
+    vector<int> steps;
+    steps={8, 16, 32};
     
     cout << "Building engine..." << endl;
-	auto engine = retinaface::Engine(buffer, size, dynamic_batch_opts, score_thresh, resize, top_n,
+	auto engine = retinaface::Engine(buffer, size, dynamic_batch_opts, score_thresh, resize, steps, top_n,
 		anchors, nms_thresh, detections_per_im, verbose, workspace_size);
 	engine.save(string(argv[2]));
 

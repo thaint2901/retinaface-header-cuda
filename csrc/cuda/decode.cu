@@ -35,7 +35,7 @@ __global__ void softmax_kernel(const float *in, float *out, int num_elem) {
 
 int decode(int batch_size,
     const void *const *inputs, void *const *outputs, size_t num_anchors,
-    const std::vector<float> &anchors, int width, int height, size_t f_width, size_t f_height, float resize, float score_thresh, int top_n,
+    const std::vector<float> &anchors, int width, int height, size_t f_width, size_t f_height, float resize, int step, float score_thresh, int top_n,
     void *workspace, size_t workspace_size, cudaStream_t stream) {
     
     /* height, width: net_inshape
@@ -83,8 +83,6 @@ int decode(int batch_size,
 
     for (int batch = 0; batch < batch_size; batch++) {
         auto in_scores = static_cast<const float *>(inputs[0]) + batch * scores_size;
-        // thrust::copy(on_stream, in_scores, in_scores + scores_size, scores_softmax);
-        // cudaMemcpyAsync(scores_softmax, in_scores, scores_size * sizeof *in_scores, cudaMemcpyDeviceToDevice, stream);
         auto in_boxes = static_cast<const float *>(inputs[1]) + batch * (scores_size / 2) * 4;
         auto in_landms = static_cast<const float *>(inputs[2]) + batch * (scores_size / 2) * 10;
 
@@ -151,8 +149,8 @@ int decode(int batch_size,
                 if (has_anchors) {
                     // float *d = anchors_d + 4 * (2 * ((y * width) + x) + a);
                     float d[4];
-                    d[0] = ((float)x + 0.5) / f_width;
-                    d[1] = ((float)y + 0.5) / f_height;
+                    d[0] = ((float)x + 0.5) * step / width;
+                    d[1] = ((float)y + 0.5) * step / height;
                     d[2] = anchors_d[a] / width;
                     d[3] = anchors_d[a] / height;
 
@@ -160,9 +158,11 @@ int decode(int batch_size,
                     float y1 = d[1] + box.y * 0.1f * d[3];
                     float x2 = d[2] * exp(box.z * 0.2f);
                     float y2 = d[3] * exp(box.w * 0.2f);
+                    x1 = x1 - x2 * 0.5f;
+                    y1 = y1 - y2 * 0.5f;
                     box = float4{
-                        (x1 - x2 * 0.5f) * width / resize,
-                        (y1 - y2 * 0.5f) * height / resize,
+                        x1 * width / resize,
+                        y1 * height / resize,
                         (x2 + x1) * width / resize,
                         (y2 + y1) * height / resize,
                     };

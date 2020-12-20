@@ -15,7 +15,7 @@ class Engine {
 public:
     Engine(const string &engine_path, bool verbose=true);
     Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dynamic_batch_opts,
-    float score_thresh, float resize, int top_n, const vector<vector<float>>&anchors,
+    float score_thresh, float resize, const vector<int>&steps, int top_n, const vector<vector<float>>&anchors,
     float nms_thresh, int detections_per_im,
     bool verbose, size_t workspace_size=(1ULL << 30));
 

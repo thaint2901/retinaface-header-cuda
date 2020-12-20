@@ -6,7 +6,7 @@ setup(
     version="0.0.2",
     author = "tnt",
     ext_modules=[CUDAExtension('retinaface._C',
-        ['csrc/extensions.cpp', 'csrc/cuda/decode.cu', 'csrc/cuda/nms.cu'],
+        ['csrc/extensions.cpp', 'csrc/engine.cpp', 'csrc/cuda/decode.cu', 'csrc/cuda/nms.cu'],
         extra_compile_args={
             'cxx': ['-std=c++14', '-O2', '-Wall'],
             'nvcc': [

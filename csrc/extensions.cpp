@@ -12,7 +12,7 @@
 using namespace std;
 
 vector<at::Tensor> decode(at::Tensor box_head, at::Tensor conf_head, at::Tensor landm_head,
-    vector<float> &anchors, int width, int height, float resize, float score_thresh, int top_n) {
+    vector<float> &anchors, int width, int height, float resize, int step, float score_thresh, int top_n) {
     
     CHECK_INPUT(box_head);
     CHECK_INPUT(conf_head);
@@ -33,11 +33,11 @@ vector<at::Tensor> decode(at::Tensor box_head, at::Tensor conf_head, at::Tensor 
     vector<void *> outputs = {scores.data_ptr(), boxes.data_ptr(), landms.data_ptr()};
 
     // Create scratch buffer
-    int size = retinaface::cuda::decode(batch, nullptr, nullptr, num_anchors, anchors, width, height, f_width, f_height, resize, score_thresh, top_n, nullptr, 0, nullptr);
+    int size = retinaface::cuda::decode(batch, nullptr, nullptr, num_anchors, anchors, width, height, f_width, f_height, resize, step, score_thresh, top_n, nullptr, 0, nullptr);
     auto scratch = at::zeros({size}, options.dtype(torch::kUInt8));
 
     // Decode boxes
-    retinaface::cuda::decode(batch, inputs.data(), outputs.data(), num_anchors, anchors, width, height, f_width, f_height, resize, score_thresh, top_n,
+    retinaface::cuda::decode(batch, inputs.data(), outputs.data(), num_anchors, anchors, width, height, f_width, f_height, resize, step, score_thresh, top_n,
         scratch.data_ptr(), size, at::cuda::getCurrentCUDAStream());
 
     return {scores, boxes, landms};
@@ -68,7 +68,39 @@ vector<at::Tensor> nms(at::Tensor scores, at::Tensor boxes, at::Tensor landms, f
     return {nms_scores, nms_boxes, nms_landms};
 }
 
+vector<at::Tensor> infer(retinaface::Engine &engine, at::Tensor data) {
+    CHECK_INPUT(data);
+
+    int batch = data.size(0);
+    int num_detections = engine.getMaxDetections();
+    auto scores = at::zeros({batch, num_detections}, data.options());
+    auto boxes = at::zeros({batch, num_detections, 4}, data.options());
+    auto landms = at::zeros({batch, num_detections, 10}, data.options());
+
+    vector<void *> buffers;
+    for (auto buffer : {data, scores, boxes, landms}) {
+        buffers.push_back(buffer.data<float>());
+    }
+
+    engine.infer(buffers, batch);
+
+    return {scores, boxes, landms};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    pybind11::class_<retinaface::Engine>(m, "Engine")
+        .def(pybind11::init<const char *, size_t, const vector<int>&,
+            float, float, const vector<int>&, int, const vector<vector<float>>&,
+            float, int, bool>())
+        .def("save", &retinaface::Engine::save)
+        .def("infer", &retinaface::Engine::infer)
+        .def_property_readonly("input_size", &retinaface::Engine::getInputSize)
+        .def_static("load", [](const string &path) {
+            return new retinaface::Engine(path);
+        })
+        .def("__call__", [](retinaface::Engine &engine, at::Tensor data) {
+            return infer(engine, data);
+        });
     m.def("decode", &decode);
     m.def("nms", &nms);
 }

@@ -1,6 +1,6 @@
 #include "engine.h"
 #include "plugins/DecodePlugin.h"
-// #include "plugins/NMSPlugin.h"
+#include "plugins/NMSPlugin.h"
 
 #include <iostream>
 #include <fstream>
@@ -64,7 +64,7 @@ Engine::~Engine() {
 }
 
 Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dynamic_batch_opts,
-    float score_thresh, float resize, int top_n, const vector<vector<float>>&anchors,
+    float score_thresh, float resize, const vector<int>&steps, int top_n, const vector<vector<float>>&anchors,
     float nms_thresh, int detections_per_im,
     bool verbose, size_t workspace_size) {
 
@@ -106,25 +106,15 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
     int height = inputDims.d[2];
     int width = inputDims.d[3];
 
-    // for (int i = 0; i < nbOutputs / 3; i++) {
-    //     auto boxOutput = network->getOutput(i*3);
-    //     auto scoreOutput = network->getOutput(i*3+1);
-    //     auto landmOutput = network->getOutput(i*3 + 2);
-    //     scores.push_back(scoreOutput);
-    //     boxes.push_back(boxOutput);
-    //     landms.push_back(landmOutput);
-    // }
-
     for (int i = 0; i < nbOutputs / 3; i++) {
         auto boxOutput = network->getOutput(i);
         auto scoreOutput = network->getOutput(nbOutputs / 3 + i);
         auto landmOutput = network->getOutput(2 * nbOutputs / 3 + i);
-        auto decodePlugin = DecodePlugin(score_thresh, top_n, anchors[i], resize, height, width);
+        auto decodePlugin = DecodePlugin(score_thresh, top_n, anchors[i], resize, steps[i], height, width);
         decodePlugins.push_back(decodePlugin); 
         vector<ITensor *> inputs = {scoreOutput, boxOutput, landmOutput};
         auto layer_decode = network->addPluginV2(inputs.data(), inputs.size(), decodePlugin);
 
-        // vector<ITensor *> decode = {layer_decode->getOutput(0), layer_decode->getOutput(1), layer_decode->getOutput(2)};
         scores.push_back(layer_decode->getOutput(0));
         boxes.push_back(layer_decode->getOutput(1));
         landms.push_back(layer_decode->getOutput(2));
@@ -143,14 +133,15 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
         concat.push_back(layer->getOutput(0));
     }
 
-    // // Add NMS plugin
-    // size_t count = top_n;
-    // auto nmsPlugin = NMSPlugin(nms_thresh, detections_per_im);
-    // auto layer_nms = network->addPluginV2(concat.data(), concat.size(), nmsPlugin);
+    // Add NMS plugin
+    size_t count = top_n;
+    auto nmsPlugin = NMSPlugin(nms_thresh, detections_per_im);
+    auto layer_nms = network->addPluginV2(concat.data(), concat.size(), nmsPlugin);
 
     vector<string> names = {"scores", "boxes", "landms"};
     for (int i = 0; i < 3; i++) {
-        auto output = concat[i];
+        // auto output = concat[i];
+        auto output = layer_nms->getOutput(i);
         network->markOutput(*output);
         output->setName(names[i].c_str());
     }
@@ -209,10 +200,6 @@ int Engine::getMaxBatchSize() {
 
 int Engine::getMaxDetections() {
     return _engine->getBindingDimensions(1).d[1];
-}
-
-int Engine::getStride() {
-    return 1;
 }
 
 }

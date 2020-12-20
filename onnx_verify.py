@@ -1,5 +1,5 @@
 import onnxruntime as rt
-sess = rt.InferenceSession("/vscode/retinaface/faceDetector_540_960_byte_t.onnx")
+sess = rt.InferenceSession("/nvidia/retinaface-header-cuda/pretrained/faceDetector_540_960.onnx")
 print("====INPUT====")
 for i in sess.get_inputs():
     print("Name: {}, Shape: {}, Dtype: {}".format(i.name, i.shape, i.type))

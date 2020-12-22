@@ -3,3 +3,4 @@ build/
 dist/
 retinaface_postprocess.egg-info/
 *.plan
+videos/

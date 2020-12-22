@@ -13,8 +13,8 @@
 #include <thrust/sequence.h>
 #include <thrust/execution_policy.h>
 #include <thrust/gather.h>
-#include <cub/device/device_radix_sort.cuh>
-#include <cub/iterator/counting_input_iterator.cuh>
+#include <thrust/system/cuda/detail/cub/device/device_radix_sort.cuh>
+#include <thrust/system/cuda/detail/cub/iterator/counting_input_iterator.cuh>
 
 
 namespace retinaface {
@@ -68,11 +68,11 @@ int nms(int batch_size,
         workspace_size += get_size_aligned<float>(count); // scores_sorted
         
         size_t temp_size_flag = 0;
-        cub::DeviceSelect::Flagged((void *)nullptr, temp_size_flag,
-            cub::CountingInputIterator<int>(count),
+        thrust::cuda_cub::cub::DeviceSelect::Flagged((void *)nullptr, temp_size_flag,
+            thrust::cuda_cub::cub::CountingInputIterator<int>(count),
             (bool *)nullptr, (int *)nullptr, (int *)nullptr, count);
         size_t temp_size_sort = 0;
-        cub::DeviceRadixSort::SortPairsDescending((void *)nullptr, temp_size_sort,
+        thrust::cuda_cub::cub::DeviceRadixSort::SortPairsDescending((void *)nullptr, temp_size_sort,
             (float *)nullptr, (float *)nullptr, (int *)nullptr, (int *)nullptr, count);
         workspace_size += std::max(temp_size_flag, temp_size_sort);
     
@@ -101,14 +101,14 @@ int nms(int batch_size,
             flags, thrust::placeholders::_1 > 0.0f);
         
         int *num_selected = reinterpret_cast<int *>(indices_sorted);
-        cub::DeviceSelect::Flagged(workspace, workspace_size, cub::CountingInputIterator<int>(0),
+        thrust::cuda_cub::cub::DeviceSelect::Flagged(workspace, workspace_size, thrust::cuda_cub::cub::CountingInputIterator<int>(0),
             flags, indices, num_selected, count, stream);
         cudaStreamSynchronize(stream);
         int num_detections = *thrust::device_pointer_cast(num_selected);
 
         // Sort scores and corresponding indices
         thrust::gather(on_stream, indices, indices + num_detections, in_scores, scores);
-        cub::DeviceRadixSort::SortPairsDescending(workspace, workspace_size,
+        thrust::cuda_cub::cub::DeviceRadixSort::SortPairsDescending(workspace, workspace_size,
             scores, scores_sorted, indices, indices_sorted, num_detections, 0, sizeof(*scores)*8, stream);
 
         // Launch actual NMS kernel - 1 block with each thread handling n detections
@@ -118,7 +118,7 @@ int nms(int batch_size,
             indices_sorted, scores_sorted, in_boxes);
 
         // Re-sort with updated scores
-        cub::DeviceRadixSort::SortPairsDescending(workspace, workspace_size,
+        thrust::cuda_cub::cub::DeviceRadixSort::SortPairsDescending(workspace, workspace_size,
             scores_sorted, scores, indices_sorted, indices, num_detections, 0, sizeof(*scores)*8, stream);
         
         // Gather filtered scores, boxes, landms

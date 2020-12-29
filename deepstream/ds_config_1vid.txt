@@ -14,8 +14,8 @@ perf-measurement-interval-sec=1
 enable=0
 rows=1
 columns=1
-width=1280
-height=720
+width=1920
+height=1080
 gpu-id=0
 
 [source0]
@@ -30,32 +30,32 @@ gpu-id=0
 batch-size=1
 batched-push-timeout=-1
 ## Set muxer output width and height
-width=1280
-height=720
+width=1920
+height=1080
 cuda-memory-type=1
 enable-padding=1
 
-# [sink0]
-# enable=1
-# type=3
-# #1=mp4 2=mkv
-# container=1
-# #1=h264 2=h265 3=mpeg4
-# ## only SW mpeg4 is supported right now.
-# codec=3
-# sync=1
-# bitrate=80000000
-# output-file=/nvidia/retinaface-header-cuda/videos/out.mp4
-# source-id=0
-
 [sink0]
-enable=0
-#Type - 1=FakeSink 2=EglSink 3=File
-type=2
+enable=1
+type=3
+#1=mp4 2=mkv
+container=1
+#1=h264 2=h265 3=mpeg4
+## only SW mpeg4 is supported right now.
+codec=3
 sync=1
+bitrate=80000000
+output-file=/nvidia/retinaface-header-cuda/videos/out.mp4
 source-id=0
-gpu-id=0
-cuda-memory-type=1
+
+# [sink0]
+# enable=0
+# #Type - 1=FakeSink 2=EglSink 3=File
+# type=2
+# sync=1
+# source-id=0
+# gpu-id=0
+# cuda-memory-type=1
 
 
 [osd]

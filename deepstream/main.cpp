@@ -3,7 +3,12 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <iostream>
+/* Open CV headers */
+#include "opencv2/imgproc/imgproc.hpp"
+#include "opencv2/highgui/highgui.hpp"
 
+#include "nvbufsurface.h"
 #include "cuda_runtime_api.h"
 #include "nvdsinfer_custom_impl.h"
 #include "gstnvdsmeta.h"
@@ -38,19 +43,52 @@ extern "C"
   std::vector < NvDsInferObjectDetectionInfo > &objectList);
 
 static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
+  NvBufSurface *surface = NULL;
+  GstBuffer * inbuf = GST_PAD_PROBE_INFO_BUFFER(info);
+  GstMapInfo in_map_info;
+  NvDsMetaList * l_obj = NULL;
+  NvDsObjectMeta *obj_meta = NULL;
+  memset (&in_map_info, 0, sizeof (in_map_info));
+  if (!gst_buffer_map (inbuf, &in_map_info, GST_MAP_READ)) {
+    g_error ("Error: Failed to map gst buffer\n");
+  }
+  surface = (NvBufSurface *) in_map_info.data;
+
   static guint use_device_mem = 0;
   static NvDsInferNetworkInfo networkInfo {PGIE_NET_WIDTH, PGIE_NET_HEIGHT, 3};
   NvDsInferParseDetectionParams detectionParams;
-  detectionParams.perClassThreshold = {0.5};
+  detectionParams.perClassThreshold = {0.95};
   static float groupThreshold = 1;
   static float groupEps = 0.2;
 
   NvDsBatchMeta *batch_meta = 
-    gst_buffer_get_nvds_batch_meta (GST_BUFFER (info->data));
+    gst_buffer_get_nvds_batch_meta (inbuf);
+  
+  if (surface->memType != NVBUF_MEM_CUDA_UNIFIED){
+    g_error ("need NVBUF_MEM_CUDA_UNIFIED memory for opencv\n");
+  }
   
   /* Iterate each frame metadata in batch */
   for (NvDsMetaList * l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) l_frame->data;
+    cv::Mat in_mat;
+
+    if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] == NULL){
+      if (NvBufSurfaceMap (surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) != 0){
+        g_error ("buffer map to be accessed by CPU failed\n");
+      }
+    }
+
+    /* Cache the mapped data for CPU access */
+    NvBufSurfaceSyncForCpu (surface, frame_meta->batch_id, 0);
+
+    in_mat =
+      cv::Mat (surface->surfaceList[frame_meta->batch_id].planeParams.height[0],
+      surface->surfaceList[frame_meta->batch_id].planeParams.width[0], CV_8UC4,
+      surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0],
+      surface->surfaceList[frame_meta->batch_id].planeParams.pitch[0]);
+
+    NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
 
     /* Iterate user metadata in frames to search PGIE's tensor metadata */
     for (NvDsMetaList * l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next) {
@@ -106,7 +144,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         rect_params.border_color = (NvOSD_ColorParams) {1, 0, 0, 1};
 
         /* display_text requires heap allocated memory. */
-        // text_params.display_text = g_strdup (pgie_classes_str[c]);
+        text_params.display_text = g_strdup("face");
         /* Display text above the left top corner of the object. */
         text_params.x_offset = rect_params.left;
         text_params.y_offset = rect_params.top - 10;
@@ -122,6 +160,8 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
     }
   }
   use_device_mem = 1 - use_device_mem;
+  gst_buffer_unmap (inbuf, &in_map_info);
+
   return GST_PAD_PROBE_OK;
 }
 
@@ -244,14 +284,15 @@ create_source_bin (guint index, gchar * uri)
 int main(int argc, char *argv[]) {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
-      NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd =
-      NULL;
+      NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
+      *queue = NULL;
+
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
 #endif
   GstBus *bus = NULL;
   guint bus_watch_id;
-  GstPad *pgie_src_pad = NULL;
+  GstPad *pgie_src_pad = NULL, *queue_src_pad = NULL;
 
   /* Check input arguments */
   if (argc != 2) {
@@ -313,6 +354,8 @@ int main(int argc, char *argv[]) {
    * behaviour of inferencing is set through config file */
   pgie = gst_element_factory_make ("nvinfer", "primary-nvinference-engine");
 
+  queue = gst_element_factory_make ("queue", NULL);
+
   /* Use convertor to convert from NV12 to RGBA as required by dsexample */
   nvvidconv = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter");
 
@@ -372,7 +415,7 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), pgie, nvvidconv,
+  gst_bin_add_many (GST_BIN (pipeline), pgie, queue, nvvidconv,
       caps_filter, nvosd, NULL);
 
 #ifdef PLATFORM_TEGRA
@@ -390,7 +433,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 #else
-  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvosd, sink, NULL)) {
+  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, queue, nvosd, sink, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }
@@ -413,6 +456,8 @@ int main(int argc, char *argv[]) {
   pgie_src_pad = gst_element_get_static_pad (pgie, "src");
   gst_pad_add_probe (pgie_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
       pgie_pad_buffer_probe, NULL, NULL);
+  
+  queue_src_pad = gst_element_get_static_pad (queue, "src");
 
   /* Set the pipeline to "playing" state */
   g_print ("Now playing: %s\n", argv[1]);

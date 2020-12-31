@@ -134,7 +134,7 @@ Engine::Engine(const char *onnx_model, size_t onnx_size, const vector<int>& dyna
     }
 
     // Add NMS plugin
-    size_t count = top_n;
+    // size_t count = top_n;
     auto nmsPlugin = NMSPlugin(nms_thresh, detections_per_im);
     auto layer_nms = network->addPluginV2(concat.data(), concat.size(), nmsPlugin);
 

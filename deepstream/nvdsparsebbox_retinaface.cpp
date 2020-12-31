@@ -92,6 +92,7 @@ bool NvDsInferParseRetinaNet (std::vector<NvDsInferLayerInfo> const &outputLayer
     float this_class = 0.0f;
     float this_score = scores[indx];
     float threshold = detectionParams.perClassThreshold[this_class];
+    // std::cout << "threshold: " << threshold << std::endl;
     
     if (this_score >= threshold)
     {

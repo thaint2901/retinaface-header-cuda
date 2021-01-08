@@ -26,7 +26,7 @@ bool NvDsInferParseRetinaNet (std::vector<NvDsInferLayerInfo> const &outputLayer
         std::vector<NvDsInferParseObjectInfo> &objectList)
 {
   static int bboxLayerIndex = -1;
-//   static int classesLayerIndex = -1;
+  static int landmsLayerIndex = -1;
   static int scoresLayerIndex = -1;
   static NvDsInferDimsCHW scoresLayerDims;
   int numDetsToParse;
@@ -61,25 +61,25 @@ bool NvDsInferParseRetinaNet (std::vector<NvDsInferLayerInfo> const &outputLayer
   }
 
   /* Find the classes layer */
-//   if (classesLayerIndex == -1) {
-//     for (unsigned int i = 0; i < outputLayersInfo.size(); i++) {
-//       if (strcmp(outputLayersInfo[i].layerName, "classes") == 0) {
-//         classesLayerIndex = i;
-//         break;
-//       }
-//     }
-//     if (classesLayerIndex == -1) {
-//     std::cerr << "Could not find classes layer buffer while parsing" << std::endl;
-//     return false;
-//     }
-//   }  
+  if (landmsLayerIndex == -1) {
+    for (unsigned int i = 0; i < outputLayersInfo.size(); i++) {
+      if (strcmp(outputLayersInfo[i].layerName, "landms") == 0) {
+        landmsLayerIndex = i;
+        break;
+      }
+    }
+    if (landmsLayerIndex == -1) {
+    std::cerr << "Could not find classes layer buffer while parsing" << std::endl;
+    return false;
+    }
+  }  
 
   
   /* Calculate the number of detections to parse */
   numDetsToParse = scoresLayerDims.c;
 
   float *bboxes = (float *) outputLayersInfo[bboxLayerIndex].buffer;
-//   float *classes = (float *) outputLayersInfo[classesLayerIndex].buffer;
+  float *landms = (float *) outputLayersInfo[landmsLayerIndex].buffer;
   float *scores = (float *) outputLayersInfo[scoresLayerIndex].buffer;
   
   for (int indx = 0; indx < numDetsToParse; indx++)
@@ -105,6 +105,17 @@ bool NvDsInferParseRetinaNet (std::vector<NvDsInferLayerInfo> const &outputLayer
       object.top = outputY1;
       object.width = outputX2 - outputX1;
       object.height = outputY2 - outputY1;
+
+      object.landmarks[0] = landms[indx * 10];
+      object.landmarks[1] = landms[indx * 10 + 1];
+      object.landmarks[2] = landms[indx * 10 + 2];
+      object.landmarks[3] = landms[indx * 10 + 3];
+      object.landmarks[4] = landms[indx * 10 + 4];
+      object.landmarks[5] = landms[indx * 10 + 5];
+      object.landmarks[6] = landms[indx * 10 + 6];
+      object.landmarks[7] = landms[indx * 10 + 7];
+      object.landmarks[8] = landms[indx * 10 + 8];
+      object.landmarks[9] = landms[indx * 10 + 9];
 
       objectList.push_back(object);
     }

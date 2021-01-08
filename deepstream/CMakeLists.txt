@@ -75,5 +75,19 @@ set_target_properties(nvdsparsebbox_retinaface PROPERTIES
 include_directories(${OpenCV_INCLUDE_DIRS})
 target_link_libraries(nvdsparsebbox_retinaface PUBLIC nvinfer nvinfer_plugin ${OpenCV_LIBS} cuda ${CUDA_LIBRARIES})
 
-add_executable(main main.cpp)
-target_link_libraries(main PRIVATE nvdsparsebbox_retinaface ${OpenCV_LIBS} cuda ${CUDA_LIBRARIES} nvinfer nvinfer_plugin nvonnxparser ${GST_LIBRARIES} nvdsgst_meta nvds_meta nvbufsurface)
+add_subdirectory(protos)
+
+find_package(Protobuf REQUIRED)
+include_directories(${CMAKE_BINARY_DIR}/protos include)
+
+add_library(align_face SHARED
+  aligner.cpp
+)
+add_library(base64 SHARED
+  base64.cpp
+)
+
+add_executable(main main.cpp )
+target_link_libraries(main PRIVATE align_face base64 nvdsparsebbox_retinaface ${OpenCV_LIBS} cuda ${CUDA_LIBRARIES} nvinfer nvinfer_plugin nvonnxparser ${GST_LIBRARIES} nvdsgst_meta nvds_meta nvbufsurface)
+target_link_libraries(main PUBLIC protobuf ${Protobuf_LIBRARIES})
+target_include_directories(main PUBLIC ${Protobuf_INCLUDE_DIRS})

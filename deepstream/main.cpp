@@ -2,8 +2,9 @@
 #include <glib.h>
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
 #include <iostream>
+#include <vector>
+#include <string>
 /* Open CV headers */
 #include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -12,10 +13,16 @@
 #include "cuda_runtime_api.h"
 #include "nvdsinfer_custom_impl.h"
 #include "gstnvdsmeta.h"
+#include "nvdsmeta_schema.h"
 #include "gstnvdsinfer.h"
 #include "nvds_version.h"
 
-#define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/infer_config_batch1.txt"
+#include "aligner.h"
+#include "base64.h"
+#include "protobuf.pb.h"
+
+#define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt"
+#define INFER_SGIE1_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstensor_sgie_config.txt"
 
 #define MUXER_OUTPUT_WIDTH 1920
 #define MUXER_OUTPUT_HEIGHT 1080
@@ -53,6 +60,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
     g_error ("Error: Failed to map gst buffer\n");
   }
   surface = (NvBufSurface *) in_map_info.data;
+  mirror::Aligner aligner;
 
   static guint use_device_mem = 0;
   static NvDsInferNetworkInfo networkInfo {PGIE_NET_WIDTH, PGIE_NET_HEIGHT, 3};
@@ -88,8 +96,6 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
       surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0],
       surface->surfaceList[frame_meta->batch_id].planeParams.pitch[0]);
 
-    NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
-
     /* Iterate user metadata in frames to search PGIE's tensor metadata */
     for (NvDsMetaList * l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next) {
       NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
@@ -121,6 +127,10 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
 #endif
       NvDsInferParseRetinaNet(outputLayersInfo, networkInfo,
           detectionParams, objectList);
+      
+      int startX = 1;
+      int startY = 1;
+      int size = 112;
       for (auto & obj:objectList) {
         NvDsObjectMeta *obj_meta = nvds_acquire_obj_meta_from_pool (batch_meta);
         obj_meta->unique_component_id = meta->unique_id;
@@ -129,39 +139,127 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         obj_meta->object_id = UNTRACKED_OBJECT_ID;
         obj_meta->class_id = 0;
 
+        // SgieRectParams & sgie_rect_params = obj_meta->sgie_rect_params;
         NvOSD_RectParams & rect_params = obj_meta->rect_params;
         NvOSD_TextParams & text_params = obj_meta->text_params;
 
         /* Assign bounding box coordinates. */
-        rect_params.left = obj.left;
-        rect_params.top = obj.top;
-        rect_params.width = obj.width;
-        rect_params.height = obj.height;
+        // rect_params.left = obj.left;
+        // rect_params.top = obj.top;
+        // rect_params.width = obj.width;
+        // rect_params.height = obj.height;
+        // if ((rect_params.top + rect_params.height) >= MUXER_OUTPUT_HEIGHT) continue;
+
+        rect_params.left = startX;
+        rect_params.top = startY;
+        rect_params.width = size;
+        rect_params.height = size;
+        // std::cout << sgie_rect_params.width << "===" << sgie_rect_params.height << std::endl;
+
+        std::vector<cv::Point2f> landmarks;
+        cv::Rect face_rect = cv::Rect (startX, startY, size, size);
+        startX += size;
+        if ((startX + size) > MUXER_OUTPUT_WIDTH) {
+          startX = 1;
+          startY += size;
+        }
+        cv::Mat faceAligned;
+
+        // Draw landmarks
+        for (int i=0; i<5; i++) {
+          cv::Point2f p1 = cv::Point(obj.landmarks[i*2], obj.landmarks[i*2+1]);
+          landmarks.emplace_back(p1);
+          // cv::circle(in_mat, cv::Point(obj.landmarks[i*2], obj.landmarks[i*2+1]), 2, cv::Scalar(255, 0, 0), 2);
+        }
+
+        aligner.AlignFace(in_mat, landmarks, &faceAligned);
+        faceAligned.copyTo(in_mat(face_rect));
+        NvBufSurfaceUnMap (surface, frame_meta->batch_id, 0);
 
         /* Border of width 3. */
-        rect_params.border_width = 3;
-        rect_params.has_bg_color = 0;
-        rect_params.border_color = (NvOSD_ColorParams) {1, 0, 0, 1};
+        // rect_params.border_width = 3;
+        // rect_params.has_bg_color = 0;
+        // rect_params.border_color = (NvOSD_ColorParams) {1, 0, 0, 1};
 
-        /* display_text requires heap allocated memory. */
-        text_params.display_text = g_strdup("face");
-        /* Display text above the left top corner of the object. */
-        text_params.x_offset = rect_params.left;
-        text_params.y_offset = rect_params.top - 10;
-        /* Set black background for the text. */
-        text_params.set_bg_clr = 1;
-        text_params.text_bg_clr = (NvOSD_ColorParams) {0, 0, 0, 1};
-        /* Font face, size and color. */
-        text_params.font_params.font_name = (gchar *) "Serif";
-        text_params.font_params.font_size = 11;
-        text_params.font_params.font_color = (NvOSD_ColorParams) {1, 1, 1, 1};
+        // /* display_text requires heap allocated memory. */
+        // text_params.display_text = g_strdup("face");
+        // /* Display text above the left top corner of the object. */
+        // text_params.x_offset = rect_params.left;
+        // text_params.y_offset = rect_params.top - 10;
+        // /* Set black background for the text. */
+        // text_params.set_bg_clr = 1;
+        // text_params.text_bg_clr = (NvOSD_ColorParams) {0, 0, 0, 1};
+        // /* Font face, size and color. */
+        // text_params.font_params.font_name = (gchar *) "Serif";
+        // text_params.font_params.font_size = 11;
+        // text_params.font_params.font_color = (NvOSD_ColorParams) {1, 1, 1, 1};
         nvds_add_obj_meta_to_frame (frame_meta, obj_meta, NULL);
       }
     }
+
+    NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
   }
   use_device_mem = 1 - use_device_mem;
   gst_buffer_unmap (inbuf, &in_map_info);
 
+  return GST_PAD_PROBE_OK;
+}
+
+static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
+  NvBufSurface *surface = NULL;
+  GstBuffer * inbuf = GST_PAD_PROBE_INFO_BUFFER(info);
+
+  static guint use_device_mem = 0;
+
+  NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta (inbuf);
+
+  for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame=l_frame->next) {
+    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) l_frame->data;
+
+    for (NvDsMetaList * l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj=l_obj->next) {
+      NvDsObjectMeta *obj_meta = (NvDsObjectMeta *) l_obj->data;
+
+      for (NvDsMetaList * l_user = obj_meta->obj_user_meta_list; l_user != NULL; l_user = l_user->next) {
+        NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
+        if (user_meta->base_meta.meta_type != NVDSINFER_TENSOR_OUTPUT_META)
+        continue;
+
+        /* convert to tensor metadata */
+        NvDsInferTensorMeta *meta = (NvDsInferTensorMeta *) user_meta->user_meta_data;
+        NvDsInferLayerInfo *info = &meta->output_layers_info[0];
+        info->buffer = meta->out_buf_ptrs_host[0];
+        if (use_device_mem && meta->out_buf_ptrs_dev[0]) {
+          cudaMemcpy (meta->out_buf_ptrs_host[0], meta->out_buf_ptrs_dev[0],
+            info->inferDims.numElements * 4, cudaMemcpyDeviceToHost);
+        }
+
+        NvDsInferDimsCHW dims;
+        getDimsCHWFromDims (dims, meta->output_layers_info[0].inferDims);
+        unsigned int emb_dim = dims.c;
+        float *outputCoverageBuffer = (float *) meta->output_layers_info[0].buffer;
+
+        std::vector<float> emb(outputCoverageBuffer, outputCoverageBuffer + emb_dim);
+        data::Face face;
+        face.set_batch(1);
+        face.set_emb_dim(512);
+        *face.mutable_emb() = {emb.begin(), emb.end()};
+        std::string binary;
+        std::string binary_b64;
+        face.SerializeToString(&binary);
+        binary_b64 = base64_encode(binary);
+        // std::cout << binary_b64 << std::endl;
+
+        // const gchar *pointer = binary_b64.c_str();
+        // NvDsEventMsgMeta *msg_meta = (NvDsEventMsgMeta *) g_malloc0 (sizeof (NvDsEventMsgMeta));
+      }
+    }
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+static GstPadProbeReturn
+osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
+  
   return GST_PAD_PROBE_OK;
 }
 
@@ -282,17 +380,18 @@ create_source_bin (guint index, gchar * uri)
 }
 
 int main(int argc, char *argv[]) {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
       NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
-      *queue = NULL;
+      *queue = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL;
 
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
 #endif
   GstBus *bus = NULL;
   guint bus_watch_id;
-  GstPad *pgie_src_pad = NULL, *queue_src_pad = NULL;
+  GstPad *pgie_src_pad = NULL, *sgie_src_pad = NULL;
 
   /* Check input arguments */
   if (argc != 2) {
@@ -317,7 +416,7 @@ int main(int argc, char *argv[]) {
   }
   gst_bin_add (GST_BIN (pipeline), streammux);
 
-  GstPad *sinkpad, *srcpad;
+  GstPad *sinkpad, *srcpad, *osd_sink_pad, *tee_render_pad, *tee_msg_pad;
   gchar pad_name_sink[16] = "sink_0";
   gchar pad_name_src[16] = "src";
 
@@ -355,6 +454,10 @@ int main(int argc, char *argv[]) {
   pgie = gst_element_factory_make ("nvinfer", "primary-nvinference-engine");
 
   queue = gst_element_factory_make ("queue", NULL);
+  queue1 = gst_element_factory_make ("queue", "nvtee-que1");
+  queue2 = gst_element_factory_make ("queue", "nvtee-que2");
+
+  sgie = gst_element_factory_make ("nvinfer", "secondary-nvinference-engine");
 
   /* Use convertor to convert from NV12 to RGBA as required by dsexample */
   nvvidconv = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter");
@@ -364,13 +467,15 @@ int main(int argc, char *argv[]) {
   /* Create OSD to draw on the converted RGBA buffer */
   nvosd = gst_element_factory_make ("nvdsosd", "nv-onscreendisplay");
 
+  tee = gst_element_factory_make ("tee", "nvsink-tee");
+
   /* Finally render the osd output */
 #ifdef PLATFORM_TEGRA
   transform = gst_element_factory_make ("nvegltransform", "nvegl-transform");
 #endif
   sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
-  if (!pgie || !nvvidconv || !caps_filter || !nvosd || !sink) {
+  if (!pgie || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !tee || !sink) {
     g_printerr ("3:One element could not be created. Exiting.\n");
     return -1;
   }
@@ -388,6 +493,9 @@ int main(int argc, char *argv[]) {
   /* Set all the necessary properties of the nvinfer element,
    * the necessary ones are : */
   g_object_set (G_OBJECT (pgie), "config-file-path", INFER_PGIE_CONFIG_FILE, NULL);
+
+  g_object_set (G_OBJECT (sgie), "config-file-path", INFER_SGIE1_CONFIG_FILE,
+        "output-tensor-meta", TRUE, "process-mode", 2, NULL);
 
 #ifndef PLATFORM_TEGRA
   /* Set properties of the nvvideoconvert element
@@ -415,17 +523,14 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), pgie, queue, nvvidconv,
-      caps_filter, nvosd, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, queue, sgie, nvosd, tee, queue1, queue2, NULL);
 
 #ifdef PLATFORM_TEGRA
   gst_bin_add_many (GST_BIN (pipeline), transform, sink, NULL);
 #else
   gst_bin_add_many (GST_BIN (pipeline), sink, NULL);
 #endif
-  /* we link the elements together */
-  /* file-source -> h264-parser -> nvh264-decoder ->
-   * nvinfer -> nvvidconv -> nvosd -> video-renderer */
+
 #ifdef PLATFORM_TEGRA
   if (!gst_element_link_many (streammux, pgie, nvvidconv,
           caps_filter, nvosd, transform, sink, NULL)) {
@@ -433,22 +538,38 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 #else
-  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, queue, nvosd, sink, NULL)) {
+  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, queue, sgie, nvosd, tee, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }
 #endif
 
-  // /* Lets add probe to get informed of the meta data generated, we add probe to
-  //  * the sink pad of the osd element, since by that time, the buffer would have
-  //  * had got all the metadata. */
-  // osd_sink_pad = gst_element_get_static_pad (nvosd, "sink");
-  // if (!osd_sink_pad)
-  //   g_print ("Unable to get sink pad\n");
-  // else
-  //   gst_pad_add_probe (osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-  //       osd_sink_pad_buffer_probe, NULL, NULL);
-  // gst_object_unref (osd_sink_pad);
+  if (!gst_element_link (queue2, sink)) {
+    g_printerr ("Elements could not be linked. Exiting.\n");
+    return -1;
+  }
+
+  tee_render_pad = gst_element_get_request_pad (tee, "src_%u");
+
+  sinkpad = gst_element_get_static_pad (queue2, "sink");
+  if (gst_pad_link (tee_render_pad, sinkpad) != GST_PAD_LINK_OK) {
+    g_printerr ("Unable to link tee and render\n");
+    gst_object_unref (sinkpad);
+    return -1;
+  }
+
+  gst_object_unref (sinkpad);
+
+  /* Lets add probe to get informed of the meta data generated, we add probe to
+   * the sink pad of the osd element, since by that time, the buffer would have
+   * had got all the metadata. */
+  osd_sink_pad = gst_element_get_static_pad (nvosd, "sink");
+  if (!osd_sink_pad)
+    g_print ("Unable to get sink pad\n");
+  else
+    gst_pad_add_probe (osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
+        osd_sink_pad_buffer_probe, NULL, NULL);
+  gst_object_unref (osd_sink_pad);
 
   /* Add probe to get informed of the meta data generated, we add probe to
    * the source pad of PGIE's next queue element, since by that time, PGIE's
@@ -457,7 +578,9 @@ int main(int argc, char *argv[]) {
   gst_pad_add_probe (pgie_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
       pgie_pad_buffer_probe, NULL, NULL);
   
-  queue_src_pad = gst_element_get_static_pad (queue, "src");
+  sgie_src_pad = gst_element_get_static_pad (sgie, "src");
+  gst_pad_add_probe (sgie_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+      sgie_pad_buffer_probe, NULL, NULL);
 
   /* Set the pipeline to "playing" state */
   g_print ("Now playing: %s\n", argv[1]);
@@ -474,5 +597,7 @@ int main(int argc, char *argv[]) {
   gst_object_unref (GST_OBJECT (pipeline));
   g_source_remove (bus_watch_id);
   g_main_loop_unref (loop);
+
+  google::protobuf::ShutdownProtobufLibrary();
   return 0;
 }

@@ -3,3 +3,5 @@ build/
 dist/
 retinaface_postprocess.egg-info/
 videos/
+pretrained/arcfaceR50_asia.plan
+*.pyc

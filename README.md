@@ -1,5 +1,9 @@
 bbox + landmarks decode and nms using cuda
 
+# Dependence
+
+* Protoc
+
 ```bash
 docker run --gpus all -itd --ipc=host --privileged --name face_recognition -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix \

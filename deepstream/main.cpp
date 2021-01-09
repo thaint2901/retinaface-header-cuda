@@ -23,7 +23,9 @@
 
 #define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt"
 #define INFER_SGIE1_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstensor_sgie_config.txt"
+#define MSCONV_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest4_msgconv_config.txt"
 
+#define MAX_TIME_STAMP_LEN 32
 #define MUXER_OUTPUT_WIDTH 1920
 #define MUXER_OUTPUT_HEIGHT 1080
 
@@ -42,12 +44,35 @@ unsigned int nvds_lib_major_version = NVDS_VERSION_MAJOR;
 unsigned int nvds_lib_minor_version = NVDS_VERSION_MINOR;
 
 gint frame_number = 0;
+static gint schema_type = 0;
+static gchar *cfg_file = "/nvidia/retinaface-header-cuda/deepstream/configs/cfg_kafka.txt";
+static gchar *topic = "message-log2";
+// static gchar *conn_str = "172.17.0.1;9092";
+static gchar *conn_str = "103.226.250.14;9092";
+static gchar *proto_lib = "/opt/nvidia/deepstream/deepstream-5.0/lib/libnvds_kafka_proto.so";
+static gchar *msg2p_lib = "/nvidia/retinaface-header-cuda/deepstream/nvmsgconv/libnvds_msgconv.so";
 
 extern "C"
   bool NvDsInferParseRetinaNet (std::vector < NvDsInferLayerInfo >
   const &outputLayersInfo, NvDsInferNetworkInfo const &networkInfo,
   NvDsInferParseDetectionParams const &detectionParams,
   std::vector < NvDsInferObjectDetectionInfo > &objectList);
+
+static void generate_ts_rfc3339 (char *buf, int buf_size)
+{
+  time_t tloc;
+  struct tm tm_log;
+  struct timespec ts;
+  char strmsec[6]; //.nnnZ\0
+
+  clock_gettime(CLOCK_REALTIME,  &ts);
+  memcpy(&tloc, (void *)(&ts.tv_sec), sizeof(time_t));
+  gmtime_r(&tloc, &tm_log);
+  strftime(buf, buf_size,"%Y-%m-%dT%H:%M:%S", &tm_log);
+  int ms = ts.tv_nsec/1000000;
+  g_snprintf(strmsec, sizeof(strmsec),".%.3dZ", ms);
+  strncat(buf, strmsec, buf_size);
+}
 
 static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
   NvBufSurface *surface = NULL;
@@ -205,6 +230,53 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
   return GST_PAD_PROBE_OK;
 }
 
+
+static gpointer meta_copy_func (gpointer data, gpointer user_data) {
+  NvDsUserMeta *user_meta = (NvDsUserMeta *) data;
+  NvDsEventMsgMeta *srcMeta = (NvDsEventMsgMeta *) user_meta->user_meta_data;
+  NvDsEventMsgMeta *dstMeta = NULL;
+
+  dstMeta = (NvDsEventMsgMeta *)g_memdup (srcMeta, sizeof(NvDsEventMsgMeta));
+
+  if (srcMeta->ts)
+    dstMeta->ts = g_strdup (srcMeta->ts);
+
+  if (srcMeta->camID)
+    dstMeta->camID = g_strdup (srcMeta->camID);
+  
+  if (srcMeta->extMsgSize > 0) {
+    NvDsFaceObject *srcObj = (NvDsFaceObject *) srcMeta->extMsg;
+    NvDsFaceObject *obj = (NvDsFaceObject *) g_malloc0 (sizeof (NvDsFaceObject));
+    if (srcObj->emb)
+      obj->emb = g_strdup (srcObj->emb);
+    
+    dstMeta->extMsg = obj;
+    dstMeta->extMsgSize = sizeof (NvDsFaceObject);
+  }
+  return dstMeta;
+}
+
+
+static void meta_free_func (gpointer data, gpointer user_data) {
+  NvDsUserMeta *user_meta = (NvDsUserMeta *) data;
+  NvDsEventMsgMeta *srcMeta = (NvDsEventMsgMeta *) user_meta->user_meta_data;
+
+  g_free (srcMeta->ts);
+
+  if(srcMeta->camID) {
+    g_free (srcMeta->camID);
+  }
+
+  if (srcMeta->extMsgSize > 0) {
+    NvDsFaceObject *obj = (NvDsFaceObject *) srcMeta->extMsg;
+    if (obj->emb)
+      g_free (obj->emb);
+  }
+  g_free (user_meta->user_meta_data);
+  user_meta->user_meta_data = NULL;
+}
+
+
 static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
   NvBufSurface *surface = NULL;
   GstBuffer * inbuf = GST_PAD_PROBE_INFO_BUFFER(info);
@@ -249,13 +321,35 @@ static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         binary_b64 = base64_encode(binary);
         // std::cout << binary_b64 << std::endl;
 
-        // const gchar *pointer = binary_b64.c_str();
-        // NvDsEventMsgMeta *msg_meta = (NvDsEventMsgMeta *) g_malloc0 (sizeof (NvDsEventMsgMeta));
+        // gchar *pointer = g_strdup (binary_b64.c_str());
+        // std::cout << pointer << std::endl;
+        NvDsEventMsgMeta *msg_meta = (NvDsEventMsgMeta *) g_malloc0 (sizeof (NvDsEventMsgMeta));
+        msg_meta->ts = (gchar *) g_malloc0 (MAX_TIME_STAMP_LEN + 1);
+        generate_ts_rfc3339(msg_meta->ts, MAX_TIME_STAMP_LEN);
+        msg_meta->camID = g_strdup ("box0-0");
+        msg_meta->objType = NVDS_OBJECT_TYPE_FACE;
+        NvDsFaceObject *obj = (NvDsFaceObject *) g_malloc0 (sizeof (NvDsFaceObject));
+        obj->emb = g_strdup (binary_b64.c_str());
+
+        msg_meta->extMsg = obj;
+        msg_meta->extMsgSize = sizeof (NvDsFaceObject);
+
+        NvDsUserMeta *user_event_meta = nvds_acquire_user_meta_from_pool (batch_meta);
+        if (user_event_meta) {
+          user_event_meta->user_meta_data = (void *) msg_meta;
+          user_event_meta->base_meta.meta_type = NVDS_EVENT_MSG_META;
+          user_event_meta->base_meta.copy_func = (NvDsMetaCopyFunc) meta_copy_func;
+          user_event_meta->base_meta.release_func = (NvDsMetaReleaseFunc) meta_free_func;
+          nvds_add_user_meta_to_frame(frame_meta, user_event_meta);
+        } else {
+          g_print ("Error in attaching event meta to buffer\n");
+        }
       }
     }
   }
   return GST_PAD_PROBE_OK;
 }
+
 
 static GstPadProbeReturn
 osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
@@ -384,7 +478,8 @@ int main(int argc, char *argv[]) {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
       NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
-      *queue = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL;
+      *queue = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL, 
+      *msgconv = NULL, *msgbroker = NULL;
 
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
@@ -467,6 +562,12 @@ int main(int argc, char *argv[]) {
   /* Create OSD to draw on the converted RGBA buffer */
   nvosd = gst_element_factory_make ("nvdsosd", "nv-onscreendisplay");
 
+  /* Create msg converter to generate payload from buffer metadata */
+  msgconv = gst_element_factory_make ("nvmsgconv", "nvmsg-converter");
+
+  /* Create msg broker to send payload to server */
+  msgbroker = gst_element_factory_make ("nvmsgbroker", "nvmsg-broker");
+
   tee = gst_element_factory_make ("tee", "nvsink-tee");
 
   /* Finally render the osd output */
@@ -475,7 +576,7 @@ int main(int argc, char *argv[]) {
 #endif
   sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
-  if (!pgie || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !tee || !sink) {
+  if (!pgie || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
     g_printerr ("3:One element could not be created. Exiting.\n");
     return -1;
   }
@@ -496,6 +597,21 @@ int main(int argc, char *argv[]) {
 
   g_object_set (G_OBJECT (sgie), "config-file-path", INFER_SGIE1_CONFIG_FILE,
         "output-tensor-meta", TRUE, "process-mode", 2, NULL);
+  
+  g_object_set (G_OBJECT(msgconv), "config", MSCONV_CONFIG_FILE, NULL);
+  g_object_set (G_OBJECT(msgconv), "payload-type", schema_type, NULL);
+  g_object_set (G_OBJECT(msgconv), "msg2p-lib", msg2p_lib, NULL);
+
+  g_object_set (G_OBJECT(msgbroker), "proto-lib", proto_lib,
+                "conn-str", conn_str, "sync", FALSE, NULL);
+  if (topic) {
+    g_object_set (G_OBJECT(msgbroker), "topic", topic, NULL);
+  }
+
+  if (cfg_file) {
+    g_object_set (G_OBJECT(msgbroker), "config", cfg_file, NULL);
+  }
+
 
 #ifndef PLATFORM_TEGRA
   /* Set properties of the nvvideoconvert element
@@ -523,7 +639,7 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, queue, sgie, nvosd, tee, queue1, queue2, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, queue, sgie, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
 
 #ifdef PLATFORM_TEGRA
   gst_bin_add_many (GST_BIN (pipeline), transform, sink, NULL);
@@ -544,12 +660,31 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
+  if (!gst_element_link_many (queue1, msgconv, msgbroker, NULL)) {
+    g_printerr ("Elements could not be linked. Exiting.\n");
+    return -1;
+  }
+
   if (!gst_element_link (queue2, sink)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }
 
+  tee_msg_pad = gst_element_get_request_pad (tee, "src_%u");
   tee_render_pad = gst_element_get_request_pad (tee, "src_%u");
+  sinkpad = gst_element_get_static_pad (queue1, "sink");
+  if (!tee_msg_pad || !tee_render_pad) {
+    g_printerr ("Unable to get request pads\n");
+    return -1;
+  }
+
+  if (gst_pad_link (tee_msg_pad, sinkpad) != GST_PAD_LINK_OK) {
+    g_printerr ("Unable to link tee and message converter\n");
+    gst_object_unref (sinkpad);
+    return -1;
+  }
+
+  gst_object_unref (sinkpad);
 
   sinkpad = gst_element_get_static_pad (queue2, "sink");
   if (gst_pad_link (tee_render_pad, sinkpad) != GST_PAD_LINK_OK) {

@@ -22,7 +22,7 @@ gpu-id=0
 enable=1
 type=2
 num-sources=1
-uri=file:///nvidia/retinaface-header-cuda/videos/Untitled.mp4
+uri=file:///nvidia/retinaface-header-cuda/videos/20200702_110558.mp4
 gpu-id=0
 
 [streammux]
@@ -36,7 +36,7 @@ cuda-memory-type=1
 enable-padding=1
 
 [sink0]
-enable=1
+enable=0
 type=3
 #1=mp4 2=mkv
 container=1
@@ -78,6 +78,6 @@ gpu-id=0
 batch-size=1
 gie-unique-id=1
 interval=0
-labelfile-path=labels.txt
+labelfile-path=/nvidia/retinaface-header-cuda/deepstream/labels.txt
 model-engine-file=/nvidia/retinaface-header-cuda/pretrained/faceDetector_540_960_batch_decode_nms.plan
-config-file=infer_config_batch1.txt
+config-file=/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt

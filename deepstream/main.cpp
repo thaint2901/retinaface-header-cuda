@@ -24,6 +24,7 @@
 #define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt"
 #define INFER_SGIE1_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstensor_sgie_config.txt"
 #define MSCONV_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest4_msgconv_config.txt"
+#define TRACKER_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest2_tracker_config.txt"
 
 #define MAX_TIME_STAMP_LEN 32
 #define MUXER_OUTPUT_WIDTH 1920
@@ -57,6 +58,131 @@ extern "C"
   const &outputLayersInfo, NvDsInferNetworkInfo const &networkInfo,
   NvDsInferParseDetectionParams const &detectionParams,
   std::vector < NvDsInferObjectDetectionInfo > &objectList);
+
+#define CONFIG_GROUP_TRACKER "tracker"
+#define CONFIG_GROUP_TRACKER_WIDTH "tracker-width"
+#define CONFIG_GROUP_TRACKER_HEIGHT "tracker-height"
+#define CONFIG_GROUP_TRACKER_LL_CONFIG_FILE "ll-config-file"
+#define CONFIG_GROUP_TRACKER_LL_LIB_FILE "ll-lib-file"
+#define CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS "enable-batch-process"
+#define CONFIG_GPU_ID "gpu-id"
+
+static gchar *
+get_absolute_file_path (gchar *cfg_file_path, gchar *file_path)
+{
+  gchar abs_cfg_path[PATH_MAX + 1];
+  gchar *abs_file_path;
+  gchar *delim;
+
+  if (file_path && file_path[0] == '/') {
+    return file_path;
+  }
+
+  if (!realpath (cfg_file_path, abs_cfg_path)) {
+    g_free (file_path);
+    return NULL;
+  }
+
+  // Return absolute path of config file if file_path is NULL.
+  if (!file_path) {
+    abs_file_path = g_strdup (abs_cfg_path);
+    return abs_file_path;
+  }
+
+  delim = g_strrstr (abs_cfg_path, "/");
+  *(delim + 1) = '\0';
+
+  abs_file_path = g_strconcat (abs_cfg_path, file_path, NULL);
+  g_free (file_path);
+
+  return abs_file_path;
+}
+
+/* Tracker config parsing */
+
+#define CHECK_ERROR(error) \
+    if (error) { \
+        g_printerr ("Error while parsing config file: %s\n", error->message); \
+        goto done; \
+    }
+
+static gboolean
+set_tracker_properties (GstElement *nvtracker)
+{
+  gboolean ret = FALSE;
+  GError *error = NULL;
+  gchar **keys = NULL;
+  gchar **key = NULL;
+  GKeyFile *key_file = g_key_file_new ();
+
+  if (!g_key_file_load_from_file (key_file, TRACKER_CONFIG_FILE, G_KEY_FILE_NONE,
+          &error)) {
+    g_printerr ("Failed to load config file: %s\n", error->message);
+    return FALSE;
+  }
+
+  keys = g_key_file_get_keys (key_file, CONFIG_GROUP_TRACKER, NULL, &error);
+  CHECK_ERROR (error);
+
+  for (key = keys; *key; key++) {
+    if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_WIDTH)) {
+      gint width =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_WIDTH, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-width", width, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_HEIGHT)) {
+      gint height =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_HEIGHT, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-height", height, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GPU_ID)) {
+      guint gpu_id =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GPU_ID, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "gpu_id", gpu_id, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_CONFIG_FILE)) {
+      char* ll_config_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_CONFIG_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-config-file", ll_config_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_LIB_FILE)) {
+      char* ll_lib_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_LIB_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-lib-file", ll_lib_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS)) {
+      gboolean enable_batch_process =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "enable_batch_process",
+                    enable_batch_process, NULL);
+    } else {
+      g_printerr ("Unknown key '%s' for group [%s]", *key,
+          CONFIG_GROUP_TRACKER);
+    }
+  }
+
+  ret = TRUE;
+done:
+  if (error) {
+    g_error_free (error);
+  }
+  if (keys) {
+    g_strfreev (keys);
+  }
+  if (!ret) {
+    g_printerr ("%s failed", __func__);
+  }
+  return ret;
+}
 
 static void generate_ts_rfc3339 (char *buf, int buf_size)
 {
@@ -166,20 +292,22 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
 
         // SgieRectParams & sgie_rect_params = obj_meta->sgie_rect_params;
         NvOSD_RectParams & rect_params = obj_meta->rect_params;
+        NvOSD_RectParams & sgie_rect_params = obj_meta->sgie_rect_params;
         NvOSD_TextParams & text_params = obj_meta->text_params;
 
         /* Assign bounding box coordinates. */
-        // rect_params.left = obj.left;
-        // rect_params.top = obj.top;
-        // rect_params.width = obj.width;
-        // rect_params.height = obj.height;
+        rect_params.left = obj.left;
+        rect_params.top = obj.top;
+        rect_params.width = obj.width;
+        rect_params.height = obj.height;
         // if ((rect_params.top + rect_params.height) >= MUXER_OUTPUT_HEIGHT) continue;
 
-        rect_params.left = startX;
-        rect_params.top = startY;
-        rect_params.width = size;
-        rect_params.height = size;
-        // std::cout << sgie_rect_params.width << "===" << sgie_rect_params.height << std::endl;
+        sgie_rect_params.left = startX;
+        sgie_rect_params.top = startY;
+        sgie_rect_params.width = size;
+        sgie_rect_params.height = size;
+        // std::cout << sgie_rect_params.left << "===" << sgie_rect_params.top << std::endl;
+        // std::cout << rect_params.left << "===" << rect_params.top << std::endl;
 
         std::vector<cv::Point2f> landmarks;
         cv::Rect face_rect = cv::Rect (startX, startY, size, size);
@@ -202,27 +330,27 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         NvBufSurfaceUnMap (surface, frame_meta->batch_id, 0);
 
         /* Border of width 3. */
-        // rect_params.border_width = 3;
-        // rect_params.has_bg_color = 0;
-        // rect_params.border_color = (NvOSD_ColorParams) {1, 0, 0, 1};
+        rect_params.border_width = 3;
+        rect_params.has_bg_color = 0;
+        rect_params.border_color = (NvOSD_ColorParams) {1, 0, 0, 1};
 
-        // /* display_text requires heap allocated memory. */
-        // text_params.display_text = g_strdup("face");
-        // /* Display text above the left top corner of the object. */
-        // text_params.x_offset = rect_params.left;
-        // text_params.y_offset = rect_params.top - 10;
-        // /* Set black background for the text. */
-        // text_params.set_bg_clr = 1;
-        // text_params.text_bg_clr = (NvOSD_ColorParams) {0, 0, 0, 1};
-        // /* Font face, size and color. */
-        // text_params.font_params.font_name = (gchar *) "Serif";
-        // text_params.font_params.font_size = 11;
-        // text_params.font_params.font_color = (NvOSD_ColorParams) {1, 1, 1, 1};
+        /* display_text requires heap allocated memory. */
+        text_params.display_text = g_strdup("face");
+        /* Display text above the left top corner of the object. */
+        text_params.x_offset = rect_params.left;
+        text_params.y_offset = rect_params.top - 10;
+        /* Set black background for the text. */
+        text_params.set_bg_clr = 1;
+        text_params.text_bg_clr = (NvOSD_ColorParams) {0, 0, 0, 1};
+        /* Font face, size and color. */
+        text_params.font_params.font_name = (gchar *) "Serif";
+        text_params.font_params.font_size = 11;
+        text_params.font_params.font_color = (NvOSD_ColorParams) {1, 1, 1, 1};
         nvds_add_obj_meta_to_frame (frame_meta, obj_meta, NULL);
       }
     }
 
-    NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
+    // NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
   }
   use_device_mem = 1 - use_device_mem;
   gst_buffer_unmap (inbuf, &in_map_info);
@@ -278,7 +406,6 @@ static void meta_free_func (gpointer data, gpointer user_data) {
 
 
 static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
-  NvBufSurface *surface = NULL;
   GstBuffer * inbuf = GST_PAD_PROBE_INFO_BUFFER(info);
 
   static guint use_device_mem = 0;
@@ -290,6 +417,9 @@ static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
 
     for (NvDsMetaList * l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj=l_obj->next) {
       NvDsObjectMeta *obj_meta = (NvDsObjectMeta *) l_obj->data;
+
+      NvOSD_RectParams & sgie_rect_params = obj_meta->sgie_rect_params;
+      // std::cout << obj_meta->object_id << "===" << sgie_rect_params.left << std::endl;
 
       for (NvDsMetaList * l_user = obj_meta->obj_user_meta_list; l_user != NULL; l_user = l_user->next) {
         NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
@@ -478,7 +608,7 @@ int main(int argc, char *argv[]) {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
       NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
-      *queue = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL, 
+      *queue = NULL, *nvtracker = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL, 
       *msgconv = NULL, *msgbroker = NULL;
 
 #ifdef PLATFORM_TEGRA
@@ -548,6 +678,9 @@ int main(int argc, char *argv[]) {
    * behaviour of inferencing is set through config file */
   pgie = gst_element_factory_make ("nvinfer", "primary-nvinference-engine");
 
+  /* We need to have a tracker to track the identified objects */
+  nvtracker = gst_element_factory_make ("nvtracker", "tracker");
+
   queue = gst_element_factory_make ("queue", NULL);
   queue1 = gst_element_factory_make ("queue", "nvtee-que1");
   queue2 = gst_element_factory_make ("queue", "nvtee-que2");
@@ -576,7 +709,7 @@ int main(int argc, char *argv[]) {
 #endif
   sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
-  if (!pgie || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
+  if (!pgie || !nvtracker || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
     g_printerr ("3:One element could not be created. Exiting.\n");
     return -1;
   }
@@ -597,6 +730,12 @@ int main(int argc, char *argv[]) {
 
   g_object_set (G_OBJECT (sgie), "config-file-path", INFER_SGIE1_CONFIG_FILE,
         "output-tensor-meta", TRUE, "process-mode", 2, NULL);
+  
+  /* Set necessary properties of the tracker element. */
+  if (!set_tracker_properties(nvtracker)) {
+    g_printerr ("Failed to set tracker properties. Exiting.\n");
+    return -1;
+  }
   
   g_object_set (G_OBJECT(msgconv), "config", MSCONV_CONFIG_FILE, NULL);
   g_object_set (G_OBJECT(msgconv), "payload-type", schema_type, NULL);
@@ -639,7 +778,7 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, queue, sgie, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
 
 #ifdef PLATFORM_TEGRA
   gst_bin_add_many (GST_BIN (pipeline), transform, sink, NULL);
@@ -654,7 +793,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 #else
-  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, queue, sgie, nvosd, tee, NULL)) {
+  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, nvosd, tee, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }
@@ -716,6 +855,8 @@ int main(int argc, char *argv[]) {
   sgie_src_pad = gst_element_get_static_pad (sgie, "src");
   gst_pad_add_probe (sgie_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
       sgie_pad_buffer_probe, NULL, NULL);
+
+  GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "retinaface-pipeline");
 
   /* Set the pipeline to "playing" state */
   g_print ("Now playing: %s\n", argv[1]);

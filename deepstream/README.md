@@ -10,3 +10,5 @@ make
 # Run app
 
 ./main rtsp://admin:meditech123@10.68.10.96:554
+
+LD_PRELOAD=build/libnvdsparsebbox_retinaface.so deepstream-app -c /nvidia/retinaface-header-cuda/deepstream/configs/ds_config_1vid.txt

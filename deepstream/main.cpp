@@ -20,22 +20,25 @@
 #include "aligner.h"
 #include "base64.h"
 #include "protobuf.pb.h"
+#include "utils.h"
 
 #define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt"
 #define INFER_SGIE1_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstensor_sgie_config.txt"
 #define MSCONV_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest4_msgconv_config.txt"
 #define TRACKER_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest2_tracker_config.txt"
 
+#define MAX_NUM_SOURCES 4
 #define MAX_TIME_STAMP_LEN 32
 #define MUXER_OUTPUT_WIDTH 1920
 #define MUXER_OUTPUT_HEIGHT 1080
-
+#define TILED_OUTPUT_WIDTH 1920
+#define TILED_OUTPUT_HEIGHT 1080
 #define PGIE_NET_WIDTH 960
 #define PGIE_NET_HEIGHT 540
 
 /* Muxer batch formation timeout, for e.g. 40 millisec. Should ideally be set
  * based on the fastest source's framerate. */
-#define MUXER_BATCH_TIMEOUT_USEC 40000
+#define MUXER_BATCH_TIMEOUT_USEC 25000
 
 /* NVIDIA Decoder source pad memory feature. This feature signifies that source
  * pads having this capability will push GstBuffers containing NvBufSurface. */
@@ -45,160 +48,29 @@ unsigned int nvds_lib_major_version = NVDS_VERSION_MAJOR;
 unsigned int nvds_lib_minor_version = NVDS_VERSION_MINOR;
 
 gint frame_number = 0;
-static gint schema_type = 0;
-static gchar *cfg_file = "/nvidia/retinaface-header-cuda/deepstream/configs/cfg_kafka.txt";
-static gchar *topic = "message-log2";
+gint g_num_sources = 0;
+gint g_source_id_list[MAX_NUM_SOURCES];
+gboolean g_eos_list[MAX_NUM_SOURCES];
+gboolean g_source_enabled[MAX_NUM_SOURCES];
+GstElement **g_source_bin_list = NULL;
+static const gint schema_type = 0;
+static const gchar *cfg_file = "/nvidia/retinaface-header-cuda/deepstream/configs/cfg_kafka.txt";
+static const gchar *topic = "message-log2";
 // static gchar *conn_str = "172.17.0.1;9092";
-static gchar *conn_str = "103.226.250.14;9092";
-static gchar *proto_lib = "/opt/nvidia/deepstream/deepstream-5.0/lib/libnvds_kafka_proto.so";
-static gchar *msg2p_lib = "/nvidia/retinaface-header-cuda/deepstream/nvmsgconv/libnvds_msgconv.so";
+static const gchar *conn_str = "103.226.250.14;9092";
+static const gchar *proto_lib = "/opt/nvidia/deepstream/deepstream-5.0/lib/libnvds_kafka_proto.so";
+static const gchar *msg2p_lib = "/nvidia/retinaface-header-cuda/deepstream/nvmsgconv/libnvds_msgconv.so";
+
+GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
+      NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
+      *queue = NULL, *nvtracker = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL,
+      *queue2 = NULL, *msgconv = NULL, *msgbroker = NULL, *tiler = NULL;
 
 extern "C"
   bool NvDsInferParseRetinaNet (std::vector < NvDsInferLayerInfo >
   const &outputLayersInfo, NvDsInferNetworkInfo const &networkInfo,
   NvDsInferParseDetectionParams const &detectionParams,
   std::vector < NvDsInferObjectDetectionInfo > &objectList);
-
-#define CONFIG_GROUP_TRACKER "tracker"
-#define CONFIG_GROUP_TRACKER_WIDTH "tracker-width"
-#define CONFIG_GROUP_TRACKER_HEIGHT "tracker-height"
-#define CONFIG_GROUP_TRACKER_LL_CONFIG_FILE "ll-config-file"
-#define CONFIG_GROUP_TRACKER_LL_LIB_FILE "ll-lib-file"
-#define CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS "enable-batch-process"
-#define CONFIG_GPU_ID "gpu-id"
-
-static gchar *
-get_absolute_file_path (gchar *cfg_file_path, gchar *file_path)
-{
-  gchar abs_cfg_path[PATH_MAX + 1];
-  gchar *abs_file_path;
-  gchar *delim;
-
-  if (file_path && file_path[0] == '/') {
-    return file_path;
-  }
-
-  if (!realpath (cfg_file_path, abs_cfg_path)) {
-    g_free (file_path);
-    return NULL;
-  }
-
-  // Return absolute path of config file if file_path is NULL.
-  if (!file_path) {
-    abs_file_path = g_strdup (abs_cfg_path);
-    return abs_file_path;
-  }
-
-  delim = g_strrstr (abs_cfg_path, "/");
-  *(delim + 1) = '\0';
-
-  abs_file_path = g_strconcat (abs_cfg_path, file_path, NULL);
-  g_free (file_path);
-
-  return abs_file_path;
-}
-
-/* Tracker config parsing */
-
-#define CHECK_ERROR(error) \
-    if (error) { \
-        g_printerr ("Error while parsing config file: %s\n", error->message); \
-        goto done; \
-    }
-
-static gboolean
-set_tracker_properties (GstElement *nvtracker)
-{
-  gboolean ret = FALSE;
-  GError *error = NULL;
-  gchar **keys = NULL;
-  gchar **key = NULL;
-  GKeyFile *key_file = g_key_file_new ();
-
-  if (!g_key_file_load_from_file (key_file, TRACKER_CONFIG_FILE, G_KEY_FILE_NONE,
-          &error)) {
-    g_printerr ("Failed to load config file: %s\n", error->message);
-    return FALSE;
-  }
-
-  keys = g_key_file_get_keys (key_file, CONFIG_GROUP_TRACKER, NULL, &error);
-  CHECK_ERROR (error);
-
-  for (key = keys; *key; key++) {
-    if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_WIDTH)) {
-      gint width =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_WIDTH, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "tracker-width", width, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_HEIGHT)) {
-      gint height =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_HEIGHT, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "tracker-height", height, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GPU_ID)) {
-      guint gpu_id =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GPU_ID, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "gpu_id", gpu_id, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_CONFIG_FILE)) {
-      char* ll_config_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
-                g_key_file_get_string (key_file,
-                    CONFIG_GROUP_TRACKER,
-                    CONFIG_GROUP_TRACKER_LL_CONFIG_FILE, &error));
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "ll-config-file", ll_config_file, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_LIB_FILE)) {
-      char* ll_lib_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
-                g_key_file_get_string (key_file,
-                    CONFIG_GROUP_TRACKER,
-                    CONFIG_GROUP_TRACKER_LL_LIB_FILE, &error));
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "ll-lib-file", ll_lib_file, NULL);
-    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS)) {
-      gboolean enable_batch_process =
-          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
-          CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS, &error);
-      CHECK_ERROR (error);
-      g_object_set (G_OBJECT (nvtracker), "enable_batch_process",
-                    enable_batch_process, NULL);
-    } else {
-      g_printerr ("Unknown key '%s' for group [%s]", *key,
-          CONFIG_GROUP_TRACKER);
-    }
-  }
-
-  ret = TRUE;
-done:
-  if (error) {
-    g_error_free (error);
-  }
-  if (keys) {
-    g_strfreev (keys);
-  }
-  if (!ret) {
-    g_printerr ("%s failed", __func__);
-  }
-  return ret;
-}
-
-static void generate_ts_rfc3339 (char *buf, int buf_size)
-{
-  time_t tloc;
-  struct tm tm_log;
-  struct timespec ts;
-  char strmsec[6]; //.nnnZ\0
-
-  clock_gettime(CLOCK_REALTIME,  &ts);
-  memcpy(&tloc, (void *)(&ts.tv_sec), sizeof(time_t));
-  gmtime_r(&tloc, &tm_log);
-  strftime(buf, buf_size,"%Y-%m-%dT%H:%M:%S", &tm_log);
-  int ms = ts.tv_nsec/1000000;
-  g_snprintf(strmsec, sizeof(strmsec),".%.3dZ", ms);
-  strncat(buf, strmsec, buf_size);
-}
 
 static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
   NvBufSurface *surface = NULL;
@@ -516,32 +388,25 @@ bus_call (GstBus * bus, GstMessage * msg, gpointer data)
 }
 
 static void
-cb_newpad (GstElement * decodebin, GstPad * decoder_src_pad, gpointer data)
+cb_newpad (GstElement * decodebin, GstPad * pad, gpointer data)
 {
-  g_print ("In cb_newpad\n");
-  GstCaps *caps = gst_pad_get_current_caps (decoder_src_pad);
+  GstCaps *caps = gst_pad_query_caps (pad, NULL);
   const GstStructure *str = gst_caps_get_structure (caps, 0);
   const gchar *name = gst_structure_get_name (str);
-  GstElement *source_bin = (GstElement *) data;
-  GstCapsFeatures *features = gst_caps_get_features (caps, 0);
 
-  /* Need to check if the pad created by the decodebin is for video and not
-   * audio. */
+  g_print ("decodebin new pad %s\n", name);
   if (!strncmp (name, "video", 5)) {
-    /* Link the decodebin pad only if decodebin has picked nvidia
-     * decoder plugin nvdec_*. We do this by checking if the pad caps contain
-     * NVMM memory features. */
-    if (gst_caps_features_contains (features, MEMORY_FEATURES)) {
-      /* Get the source bin ghost pad */
-      GstPad *bin_ghost_pad = gst_element_get_static_pad (source_bin, "src");
-      if (!gst_ghost_pad_set_target (GST_GHOST_PAD (bin_ghost_pad),
-              decoder_src_pad)) {
-        g_printerr ("Failed to link decoder src pad to source bin ghost pad\n");
-      }
-      gst_object_unref (bin_ghost_pad);
+    gint source_id = (*(gint *) data);
+    gchar pad_name[16] = { 0 };
+    GstPad *sinkpad = NULL;
+    g_snprintf (pad_name, 15, "sink_%u", source_id);
+    sinkpad = gst_element_get_request_pad (streammux, pad_name);
+    if (gst_pad_link (pad, sinkpad) != GST_PAD_LINK_OK) {
+      g_print ("Failed to link decodebin to pipeline\n");
     } else {
-      g_printerr ("Error: Decodebin did not pick nvidia decoder plugin.\n");
+      g_print ("Decodebin linked to pipeline\n");
     }
+    gst_object_unref (sinkpad);
   }
 }
 
@@ -559,46 +424,19 @@ decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
 static GstElement *
 create_source_bin (guint index, gchar * uri)
 {
-  GstElement *bin = NULL, *uri_decode_bin = NULL;
+  GstElement *bin = NULL;
   gchar bin_name[16] = { };
 
+  g_print ("creating uridecodebin for [%s]\n", uri);
+  g_source_id_list[index] = index;
   g_snprintf (bin_name, 15, "source-bin-%02d", index);
-  /* Create a source GstBin to abstract this bin's content from the rest of the
-   * pipeline */
-  bin = gst_bin_new (bin_name);
-
-  /* Source element for reading from the uri.
-   * We will use decodebin and let it figure out the container format of the
-   * stream and the codec and plug the appropriate demux and decode plugins. */
-  uri_decode_bin = gst_element_factory_make ("uridecodebin", "uri-decode-bin");
-
-  if (!bin || !uri_decode_bin) {
-    g_printerr ("1:One element in source bin could not be created.\n");
-    return NULL;
-  }
-
-  /* We set the input uri to the source element */
-  g_object_set (G_OBJECT (uri_decode_bin), "uri", uri, NULL);
-
-  /* Connect to the "pad-added" signal of the decodebin which generates a
-   * callback once a new pad for raw data has beed created by the decodebin */
-  g_signal_connect (G_OBJECT (uri_decode_bin), "pad-added",
-      G_CALLBACK (cb_newpad), bin);
-  g_signal_connect (G_OBJECT (uri_decode_bin), "child-added",
-      G_CALLBACK (decodebin_child_added), bin);
-
-  gst_bin_add (GST_BIN (bin), uri_decode_bin);
-
-  /* We need to create a ghost pad for the source bin which will act as a proxy
-   * for the video decoder src pad. The ghost pad will not have a target right
-   * now. Once the decode bin creates the video decoder and generates the
-   * cb_newpad callback, we will set the ghost pad target to the video decoder
-   * src pad. */
-  if (!gst_element_add_pad (bin, gst_ghost_pad_new_no_target ("src",
-              GST_PAD_SRC))) {
-    g_printerr ("Failed to add ghost pad in source bin\n");
-    return NULL;
-  }
+  bin = gst_element_factory_make ("uridecodebin", bin_name);
+  g_object_set (G_OBJECT (bin), "uri", uri, NULL);
+  g_signal_connect (G_OBJECT (bin), "pad-added",
+      G_CALLBACK (cb_newpad), &g_source_id_list[index]);
+  g_signal_connect (G_OBJECT (bin), "child-added",
+      G_CALLBACK (decodebin_child_added), &g_source_id_list[index]);
+  g_source_enabled[index] = TRUE;
 
   return bin;
 }
@@ -606,23 +444,21 @@ create_source_bin (guint index, gchar * uri)
 int main(int argc, char *argv[]) {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
   GMainLoop *loop = NULL;
-  GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
-      NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
-      *queue = NULL, *nvtracker = NULL, *sgie = NULL, *tee = NULL, *queue1 = NULL, *queue2 = NULL, 
-      *msgconv = NULL, *msgbroker = NULL;
 
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
 #endif
   GstBus *bus = NULL;
-  guint bus_watch_id;
+  guint bus_watch_id, num_sources, tiler_rows, tiler_columns;
   GstPad *pgie_src_pad = NULL, *sgie_src_pad = NULL;
+  GstPad *sinkpad, *osd_sink_pad, *tee_render_pad, *tee_msg_pad;
 
   /* Check input arguments */
-  if (argc != 2) {
-    g_printerr ("Usage: %s <uri>\n", argv[0]);
+  if (argc < 2) {
+    g_printerr ("Usage: %s <uri1>\n", argv[0]);
     return -1;
   }
+  num_sources = argc - 1;
 
   /* Standard GStreamer initialization */
   gst_init (&argc, &argv);
@@ -641,38 +477,17 @@ int main(int argc, char *argv[]) {
   }
   gst_bin_add (GST_BIN (pipeline), streammux);
 
-  GstPad *sinkpad, *srcpad, *osd_sink_pad, *tee_render_pad, *tee_msg_pad;
-  gchar pad_name_sink[16] = "sink_0";
-  gchar pad_name_src[16] = "src";
+  g_source_bin_list = (GstElement **) g_malloc0 (sizeof (GstElement *) * MAX_NUM_SOURCES);
 
-  GstElement *source_bin = create_source_bin (0, argv[1]);
-
-  if (!source_bin) {
-    g_printerr ("Failed to create source bin. Exiting.\n");
-    return -1;
+  for (int i = 0; i < num_sources; i++) {
+    GstElement *source_bin = create_source_bin (i, argv[i+1]);
+    if (!source_bin) {
+      g_printerr ("Failed to create source bin. Exiting.\n");
+      return -1;
+    }
+    g_source_bin_list[i] = source_bin;
+    gst_bin_add (GST_BIN (pipeline), source_bin);
   }
-
-  gst_bin_add (GST_BIN (pipeline), source_bin);
-
-  sinkpad = gst_element_get_request_pad (streammux, pad_name_sink);
-  if (!sinkpad) {
-    g_printerr ("Streammux request sink pad failed. Exiting.\n");
-    return -1;
-  }
-
-  srcpad = gst_element_get_static_pad (source_bin, pad_name_src);
-  if (!srcpad) {
-    g_printerr ("Failed to get src pad of source bin. Exiting.\n");
-    return -1;
-  }
-
-  if (gst_pad_link (srcpad, sinkpad) != GST_PAD_LINK_OK) {
-    g_printerr ("Failed to link source bin to stream muxer. Exiting.\n");
-    return -1;
-  }
-
-  gst_object_unref (srcpad);
-  gst_object_unref (sinkpad);
 
   /* Use nvinfer to run inferencing on decoder's output,
    * behaviour of inferencing is set through config file */
@@ -692,6 +507,9 @@ int main(int argc, char *argv[]) {
 
   caps_filter = gst_element_factory_make ("capsfilter", NULL);
 
+  /* Use nvtiler to stitch o/p from upstream components */
+  tiler = gst_element_factory_make ("nvmultistreamtiler", "nvtiler");
+
   /* Create OSD to draw on the converted RGBA buffer */
   nvosd = gst_element_factory_make ("nvdsosd", "nv-onscreendisplay");
 
@@ -709,7 +527,7 @@ int main(int argc, char *argv[]) {
 #endif
   sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
-  if (!pgie || !nvtracker || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
+  if (!pgie || !nvtracker || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !tiler || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
     g_printerr ("3:One element could not be created. Exiting.\n");
     return -1;
   }
@@ -721,8 +539,9 @@ int main(int argc, char *argv[]) {
 #endif
 
   g_object_set (G_OBJECT (streammux), "width", MUXER_OUTPUT_WIDTH, "height",
-    MUXER_OUTPUT_HEIGHT, "batch-size", 1,
+    MUXER_OUTPUT_HEIGHT, "batch-size", 30,
     "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
+  g_object_set (G_OBJECT (streammux), "live-source", 1, NULL);
   
   /* Set all the necessary properties of the nvinfer element,
    * the necessary ones are : */
@@ -732,7 +551,7 @@ int main(int argc, char *argv[]) {
         "output-tensor-meta", TRUE, "process-mode", 2, NULL);
   
   /* Set necessary properties of the tracker element. */
-  if (!set_tracker_properties(nvtracker)) {
+  if (!set_tracker_properties(nvtracker, TRACKER_CONFIG_FILE)) {
     g_printerr ("Failed to set tracker properties. Exiting.\n");
     return -1;
   }
@@ -766,6 +585,12 @@ int main(int argc, char *argv[]) {
   GstCapsFeatures *feature = gst_caps_features_new (MEMORY_FEATURES, NULL);
   gst_caps_set_features (caps, 0, feature);
 
+  tiler_rows = (guint) sqrt (num_sources);
+  tiler_columns = (guint) ceil (1.0 * num_sources / tiler_rows);
+  /* we set the osd properties here */
+  g_object_set (G_OBJECT (tiler), "rows", tiler_rows, "columns", tiler_columns,
+      "width", TILED_OUTPUT_WIDTH, "height", TILED_OUTPUT_HEIGHT, NULL);
+
   g_object_set (G_OBJECT (caps_filter), "caps", caps, NULL);
 
   /* Set properties of the sink element */
@@ -778,7 +603,7 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
 
 #ifdef PLATFORM_TEGRA
   gst_bin_add_many (GST_BIN (pipeline), transform, sink, NULL);
@@ -793,7 +618,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 #else
-  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, nvosd, tee, NULL)) {
+  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, tee, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }

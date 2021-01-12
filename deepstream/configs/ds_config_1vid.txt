@@ -20,14 +20,14 @@ gpu-id=0
 
 [source0]
 enable=1
-type=2
+type=3
 num-sources=1
 uri=file:///nvidia/retinaface-header-cuda/videos/20200702_110558.mp4
 gpu-id=0
 
 [streammux]
 gpu-id=0
-batch-size=1
+batch-size=4
 batched-push-timeout=-1
 ## Set muxer output width and height
 width=1920

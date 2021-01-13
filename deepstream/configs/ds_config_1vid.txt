@@ -22,7 +22,8 @@ gpu-id=0
 enable=1
 type=3
 num-sources=1
-uri=file:///nvidia/retinaface-header-cuda/videos/20200702_110558.mp4
+#uri=file:///retinaface-header-cuda/deepstream/output.mp4
+uri=rtsp://admin:meditech123@10.68.10.96:554
 gpu-id=0
 
 [streammux]
@@ -32,8 +33,10 @@ batched-push-timeout=-1
 ## Set muxer output width and height
 width=1920
 height=1080
-cuda-memory-type=1
+#cuda-memory-type=1
 enable-padding=1
+live-source=1
+batched-push-timeout=25000
 
 [sink0]
 enable=0
@@ -57,6 +60,23 @@ source-id=0
 # gpu-id=0
 # cuda-memory-type=1
 
+[sink0]
+enable=1
+#Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming 5=Overlay
+type=4
+#1=h264 2=h265
+codec=1
+#encoder type 0=Hardware 1=Software
+enc-type=0
+sync=0
+bitrate=500000
+#H264 Profile - 0=Baseline 2=Main 4=High
+#H265 Profile - 0=Main 1=Main10
+profile=0
+# set below properties in case of RTSPStreaming
+rtsp-port=8554
+udp-port=5400
+
 
 [osd]
 enable=1
@@ -78,6 +98,6 @@ gpu-id=0
 batch-size=1
 gie-unique-id=1
 interval=0
-labelfile-path=/nvidia/retinaface-header-cuda/deepstream/labels.txt
-model-engine-file=/nvidia/retinaface-header-cuda/pretrained/faceDetector_540_960_batch_decode_nms.plan
-config-file=/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt
+labelfile-path=../labels.txt
+model-engine-file=../../pretrained/faceDetector_540_960_batch_arm.plan
+config-file=../configs/infer_config_batch1.txt

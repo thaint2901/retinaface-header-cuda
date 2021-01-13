@@ -46,7 +46,7 @@
 gpu-id=0
 net-scale-factor=1.0
 offsets=104.0;117.0;123.0
-model-engine-file=/nvidia/retinaface-header-cuda/pretrained/faceDetector_540_960_batch_decode_nms.plan
+model-engine-file=../../pretrained/faceDetector_540_960_batch_arm.plan
 #labelfile-path=labels.txt
 force-implicit-batch-dim=1
 batch-size=1
@@ -56,7 +56,7 @@ process-mode=1
 model-color-format=1
 #infer-dims=3;540;960
 num-detected-classes=1
-interval=0
+interval=2
 gie-unique-id=1
 output-blob-names=boxes;scores;landms
 #parse-bbox-func-name=NvDsInferParseRetinaNet

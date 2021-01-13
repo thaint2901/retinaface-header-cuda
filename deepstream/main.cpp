@@ -22,10 +22,10 @@
 #include "protobuf.pb.h"
 #include "utils.h"
 
-#define INFER_PGIE_CONFIG_FILE  "/nvidia/retinaface-header-cuda/deepstream/configs/infer_config_batch1.txt"
-#define INFER_SGIE1_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstensor_sgie_config.txt"
-#define MSCONV_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest4_msgconv_config.txt"
-#define TRACKER_CONFIG_FILE "/nvidia/retinaface-header-cuda/deepstream/configs/dstest2_tracker_config.txt"
+#define INFER_PGIE_CONFIG_FILE  "../configs/infer_config_batch1.txt"
+#define INFER_SGIE1_CONFIG_FILE "../configs/dstensor_sgie_config.txt"
+#define MSCONV_CONFIG_FILE "../configs/dstest4_msgconv_config.txt"
+#define TRACKER_CONFIG_FILE "../configs/dstest2_tracker_config.txt"
 
 #define MAX_NUM_SOURCES 4
 #define MAX_TIME_STAMP_LEN 32
@@ -54,12 +54,16 @@ gboolean g_eos_list[MAX_NUM_SOURCES];
 gboolean g_source_enabled[MAX_NUM_SOURCES];
 GstElement **g_source_bin_list = NULL;
 static const gint schema_type = 0;
-static const gchar *cfg_file = "/nvidia/retinaface-header-cuda/deepstream/configs/cfg_kafka.txt";
+static const gchar *cfg_file = "../configs/cfg_kafka.txt";
 static const gchar *topic = "message-log2";
 // static gchar *conn_str = "172.17.0.1;9092";
 static const gchar *conn_str = "103.226.250.14;9092";
 static const gchar *proto_lib = "/opt/nvidia/deepstream/deepstream-5.0/lib/libnvds_kafka_proto.so";
-static const gchar *msg2p_lib = "/nvidia/retinaface-header-cuda/deepstream/nvmsgconv/libnvds_msgconv.so";
+static const gchar *msg2p_lib = "../nvmsgconv/libnvds_msgconv.so";
+
+#ifdef PLATFORM_TEGRA
+  GstElement *transform = NULL;
+#endif
 
 GstElement *pipeline = NULL, *streammux = NULL, *sink = NULL, *pgie =
       NULL, *nvvidconv = NULL, *caps_filter = NULL, *nvosd = NULL,
@@ -94,11 +98,13 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
 
   NvDsBatchMeta *batch_meta = 
     gst_buffer_get_nvds_batch_meta (inbuf);
-  
+
+#ifdef PLATFORM_TEGRA
   if (surface->memType != NVBUF_MEM_CUDA_UNIFIED){
     g_error ("need NVBUF_MEM_CUDA_UNIFIED memory for opencv\n");
   }
-  
+#endif
+
   /* Iterate each frame metadata in batch */
   for (NvDsMetaList * l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) l_frame->data;
@@ -442,12 +448,13 @@ create_source_bin (guint index, gchar * uri)
 }
 
 int main(int argc, char *argv[]) {
+// #ifdef PLATFORM_TEGRA
+//   std::cout << PLATFORM_TEGRA << std::endl;
+//   return 0;
+// #endif
+
   GOOGLE_PROTOBUF_VERIFY_VERSION;
   GMainLoop *loop = NULL;
-
-#ifdef PLATFORM_TEGRA
-  GstElement *transform = NULL;
-#endif
   GstBus *bus = NULL;
   guint bus_watch_id, num_sources, tiler_rows, tiler_columns;
   GstPad *pgie_src_pad = NULL, *sgie_src_pad = NULL;
@@ -525,6 +532,7 @@ int main(int argc, char *argv[]) {
 #ifdef PLATFORM_TEGRA
   transform = gst_element_factory_make ("nvegltransform", "nvegl-transform");
 #endif
+
   sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
   if (!pgie || !nvtracker || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !tiler || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
@@ -603,36 +611,33 @@ int main(int argc, char *argv[]) {
 
   /* Set up the pipeline */
   /* we add all elements into the pipeline */
-  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, msgconv, msgbroker, tee, queue1, queue2, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, msgconv, msgbroker, tee, queue1, queue2, sink, NULL);
 
 #ifdef PLATFORM_TEGRA
-  gst_bin_add_many (GST_BIN (pipeline), transform, sink, NULL);
-#else
-  gst_bin_add_many (GST_BIN (pipeline), sink, NULL);
+  gst_bin_add_many (GST_BIN (pipeline), transform, NULL);
 #endif
 
-#ifdef PLATFORM_TEGRA
-  if (!gst_element_link_many (streammux, pgie, nvvidconv,
-          caps_filter, nvosd, transform, sink, NULL)) {
-    g_printerr ("Elements could not be linked: 2. Exiting.\n");
-    return -1;
-  }
-#else
   if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, tee, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }
-#endif
 
   if (!gst_element_link_many (queue1, msgconv, msgbroker, NULL)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }
 
+#ifdef PLATFORM_TEGRA
+  if (!gst_element_link_many (queue2, transform, sink, NULL)) {
+    g_printerr ("Elements could not be linked. Exiting.\n");
+    return -1;
+  }
+#else
   if (!gst_element_link (queue2, sink)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }
+#endif
 
   tee_msg_pad = gst_element_get_request_pad (tee, "src_%u");
   tee_render_pad = gst_element_get_request_pad (tee, "src_%u");

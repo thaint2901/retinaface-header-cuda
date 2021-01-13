@@ -59,6 +59,8 @@ endif(DEFINED DeepStream_DIR)
 include_directories(${CUDA_INCLUDE_DIRS})
 include_directories(${GST_INCLUDE_DIRS})
 
+message(STATUS "====================${PLATFORM_TEGRA}")
+
 add_library(nvdsparsebbox_retinaface SHARED
   ../csrc/cuda/decode.h
   ../csrc/cuda/decode.cu
@@ -87,6 +89,9 @@ add_library(utils SHARED
 )
 
 add_executable(main main.cpp )
+if(DEFINED PLATFORM_TEGRA)
+  add_definitions(-DPLATFORM_TEGRA=1)
+endif(DEFINED PLATFORM_TEGRA)
 target_link_libraries(main PRIVATE utils nvdsparsebbox_retinaface ${OpenCV_LIBS} cuda ${CUDA_LIBRARIES} nvinfer nvinfer_plugin nvonnxparser ${GST_LIBRARIES} nvdsgst_meta nvds_meta nvbufsurface)
 target_link_libraries(main PUBLIC protobuf ${Protobuf_LIBRARIES})
 target_include_directories(main PUBLIC ${Protobuf_INCLUDE_DIRS})

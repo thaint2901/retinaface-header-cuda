@@ -13,3 +13,13 @@ make
 ./main rtsp://admin:meditech123@10.68.10.96:554
 
 LD_PRELOAD=build/libnvdsparsebbox_retinaface.so deepstream-app -c configs/ds_config_1vid.txt
+
+# Bug
+
+unset display in terminal shown below.
+
+$ unset DISPLAY
+Then run deepstream-app. It will solve the below errors.
+
+No EGL Display
+nvbufsurftransform: Could not get EGL display connection

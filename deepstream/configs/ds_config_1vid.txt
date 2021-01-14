@@ -22,8 +22,8 @@ gpu-id=0
 enable=1
 type=3
 num-sources=1
-#uri=file:///retinaface-header-cuda/deepstream/output.mp4
-uri=rtsp://admin:meditech123@10.68.10.96:554
+uri=file:///retinaface-header-cuda/videos/videoplayback.mp4
+#uri=rtsp://admin:meditech123@10.68.10.96:554
 gpu-id=0
 
 [streammux]
@@ -61,7 +61,7 @@ source-id=0
 # cuda-memory-type=1
 
 [sink0]
-enable=1
+enable=0
 #Type - 1=FakeSink 2=EglSink 3=File 4=RTSPStreaming 5=Overlay
 type=4
 #1=h264 2=h265

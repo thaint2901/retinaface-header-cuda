@@ -2,7 +2,19 @@ bbox + landmarks decode and nms using cuda
 
 # Dependence
 
-* Protoc
+## Protoc
+```
+apt-get install autoconf automake libtool curl make g++ unzip
+wget https://github.com/protocolbuffers/protobuf/releases/download/v3.14.0/protobuf-all-3.14.0.tar.gz
+tar xvzf protobuf-all-3.14.0.tar.gz
+cd protobuf-3.14.0/
+./configure
+make
+make install
+ldconfig
+```
+
+## Opencv
 
 ```bash
 docker run --gpus all -itd --ipc=host --privileged --name face_recognition -e DISPLAY=$DISPLAY \

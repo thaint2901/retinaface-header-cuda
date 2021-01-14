@@ -34,7 +34,8 @@ int main(int argc, char *argv[]) {
     float score_thresh = 0.2f;
     int top_n = 250;
     float nms_thresh = 0.4;
-    float resize = 0.5;
+    // float resize = 0.5;  // 540/1080
+    float resize = 0.167;  // 180/1080
     int detections_per_im = 50;
     vector<vector<float>> anchors;
     anchors = {{10.0, 20.0},

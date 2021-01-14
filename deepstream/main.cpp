@@ -33,8 +33,8 @@
 #define MUXER_OUTPUT_HEIGHT 1080
 #define TILED_OUTPUT_WIDTH 1920
 #define TILED_OUTPUT_HEIGHT 1080
-#define PGIE_NET_WIDTH 960
-#define PGIE_NET_HEIGHT 540
+#define PGIE_NET_WIDTH 320
+#define PGIE_NET_HEIGHT 180
 
 /* Muxer batch formation timeout, for e.g. 40 millisec. Should ideally be set
  * based on the fastest source's framerate. */
@@ -99,7 +99,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
   NvDsBatchMeta *batch_meta = 
     gst_buffer_get_nvds_batch_meta (inbuf);
 
-#ifdef PLATFORM_TEGRA
+#ifndef PLATFORM_TEGRA
   if (surface->memType != NVBUF_MEM_CUDA_UNIFIED){
     g_error ("need NVBUF_MEM_CUDA_UNIFIED memory for opencv\n");
   }
@@ -185,7 +185,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         sgie_rect_params.width = size;
         sgie_rect_params.height = size;
         // std::cout << sgie_rect_params.left << "===" << sgie_rect_params.top << std::endl;
-        // std::cout << rect_params.left << "===" << rect_params.top << std::endl;
+        // std::cout << rect_params.left << "==11111==" << rect_params.top << std::endl;
 
         std::vector<cv::Point2f> landmarks;
         cv::Rect face_rect = cv::Rect (startX, startY, size, size);
@@ -205,7 +205,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
 
         aligner.AlignFace(in_mat, landmarks, &faceAligned);
         faceAligned.copyTo(in_mat(face_rect));
-        NvBufSurfaceUnMap (surface, frame_meta->batch_id, 0);
+        NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
 
         /* Border of width 3. */
         rect_params.border_width = 3;
@@ -228,7 +228,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
       }
     }
 
-    // NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
+    NvBufSurfaceUnMap (surface, frame_meta->batch_id, 0);
   }
   use_device_mem = 1 - use_device_mem;
   gst_buffer_unmap (inbuf, &in_map_info);
@@ -296,8 +296,8 @@ static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
     for (NvDsMetaList * l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj=l_obj->next) {
       NvDsObjectMeta *obj_meta = (NvDsObjectMeta *) l_obj->data;
 
-      NvOSD_RectParams & sgie_rect_params = obj_meta->sgie_rect_params;
-      // std::cout << obj_meta->object_id << "===" << sgie_rect_params.left << std::endl;
+      NvOSD_RectParams & rect_params = obj_meta->rect_params;
+      // std::cout << rect_params.left << "==22222==" << rect_params.top << std::endl;
 
       for (NvDsMetaList * l_user = obj_meta->obj_user_meta_list; l_user != NULL; l_user = l_user->next) {
         NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
@@ -452,6 +452,7 @@ int main(int argc, char *argv[]) {
 //   std::cout << PLATFORM_TEGRA << std::endl;
 //   return 0;
 // #endif
+  // g_setenv ("DS_NEW_BUFAPI", "1", TRUE);
 
   GOOGLE_PROTOBUF_VERIFY_VERSION;
   GMainLoop *loop = NULL;
@@ -533,7 +534,8 @@ int main(int argc, char *argv[]) {
   transform = gst_element_factory_make ("nvegltransform", "nvegl-transform");
 #endif
 
-  sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
+  // sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
+  sink = gst_element_factory_make ("fakesink", "nvvideo-renderer");
 
   if (!pgie || !nvtracker || !queue || !queue1 || !queue2 || !sgie || !nvvidconv || !caps_filter || !tiler || !nvosd  || !msgconv || !msgbroker || !tee || !sink) {
     g_printerr ("3:One element could not be created. Exiting.\n");
@@ -547,7 +549,7 @@ int main(int argc, char *argv[]) {
 #endif
 
   g_object_set (G_OBJECT (streammux), "width", MUXER_OUTPUT_WIDTH, "height",
-    MUXER_OUTPUT_HEIGHT, "batch-size", 30,
+    MUXER_OUTPUT_HEIGHT, "batch-size", 4,
     "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
   g_object_set (G_OBJECT (streammux), "live-source", 1, NULL);
   
@@ -617,7 +619,7 @@ int main(int argc, char *argv[]) {
   gst_bin_add_many (GST_BIN (pipeline), transform, NULL);
 #endif
 
-  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, nvtracker, queue, sgie, tiler, nvosd, tee, NULL)) {
+  if (!gst_element_link_many (streammux, nvvidconv, caps_filter, pgie, queue, sgie, nvtracker, tiler, nvosd, tee, NULL)) {
     g_printerr ("Elements could not be linked: 2. Exiting.\n");
     return -1;
   }
@@ -628,7 +630,7 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef PLATFORM_TEGRA
-  if (!gst_element_link_many (queue2, transform, sink, NULL)) {
+  if (!gst_element_link_many (queue2, sink, NULL)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }

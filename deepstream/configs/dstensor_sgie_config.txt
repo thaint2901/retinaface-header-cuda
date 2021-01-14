@@ -2,7 +2,7 @@
 gpu-id=0
 net-scale-factor=0.0078125
 offsets=127.5;127.5;127.5
-model-engine-file=/nvidia/retinaface-header-cuda/pretrained/arcfaceR50_asia.plan
+model-engine-file=../../pretrained/arcfaceR50_asia_arm.plan
 force-implicit-batch-dim=1
 batch-size=16
 # 0=FP32 and 1=INT8 mode

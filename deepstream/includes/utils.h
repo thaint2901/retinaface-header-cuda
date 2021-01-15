@@ -1,4 +1,9 @@
 #include <gst/gst.h>
+#include <opencv2/highgui/highgui.hpp>
+#include <vector>
+#include <string>
+
+#include "base64.h"
 
 /* Tracker config parsing */
 
@@ -21,3 +26,5 @@ static gchar * get_absolute_file_path (gchar *cfg_file_path, gchar *file_path);
 gboolean set_tracker_properties (GstElement *nvtracker, gchar *config);
 
 void generate_ts_rfc3339 (char *buf, int buf_size);
+
+std::string mat_encode(cv::Mat &img);

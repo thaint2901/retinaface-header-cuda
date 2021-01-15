@@ -123,3 +123,11 @@ void generate_ts_rfc3339 (char *buf, int buf_size)
   g_snprintf(strmsec, sizeof(strmsec),".%.3dZ", ms);
   strncat(buf, strmsec, buf_size);
 }
+
+std::string mat_encode(cv::Mat &img) {
+    std::vector<uchar> buf;
+    cv::imencode(".jpg", img, buf);
+    auto *enc_msg = reinterpret_cast<unsigned char*>(buf.data());
+    std::string encoded = base64_encode(enc_msg, buf.size());
+    return encoded;
+}

@@ -3,8 +3,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <iostream>
-#include <vector>
-#include <string>
 /* Open CV headers */
 #include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -53,6 +51,7 @@ gint g_source_id_list[MAX_NUM_SOURCES];
 gboolean g_eos_list[MAX_NUM_SOURCES];
 gboolean g_source_enabled[MAX_NUM_SOURCES];
 GstElement **g_source_bin_list = NULL;
+static const gchar* box_id = g_getenv("BOX_ID");
 static const gint schema_type = 0;
 static const gchar *cfg_file = "../configs/cfg_kafka.txt";
 static const gchar *topic = "message-log2";
@@ -109,16 +108,13 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
   for (NvDsMetaList * l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next) {
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) l_frame->data;
     cv::Mat in_mat;
-
     if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] == NULL){
       if (NvBufSurfaceMap (surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) != 0){
         g_error ("buffer map to be accessed by CPU failed\n");
       }
     }
-
     /* Cache the mapped data for CPU access */
     NvBufSurfaceSyncForCpu (surface, frame_meta->batch_id, 0);
-
     in_mat =
       cv::Mat (surface->surfaceList[frame_meta->batch_id].planeParams.height[0],
       surface->surfaceList[frame_meta->batch_id].planeParams.width[0], CV_8UC4,
@@ -185,7 +181,7 @@ static GstPadProbeReturn pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         sgie_rect_params.width = size;
         sgie_rect_params.height = size;
         // std::cout << sgie_rect_params.left << "===" << sgie_rect_params.top << std::endl;
-        // std::cout << rect_params.left << "==11111==" << rect_params.top << std::endl;
+        std::cout << rect_params.left << "==11111==" << rect_params.top << std::endl;
 
         std::vector<cv::Point2f> landmarks;
         cv::Rect face_rect = cv::Rect (startX, startY, size, size);
@@ -284,20 +280,48 @@ static void meta_free_func (gpointer data, gpointer user_data) {
 
 
 static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data) {
+  NvBufSurface *surface = NULL;
   GstBuffer * inbuf = GST_PAD_PROBE_INFO_BUFFER(info);
+  GstMapInfo in_map_info;
+  memset (&in_map_info, 0, sizeof (in_map_info));
+  if (!gst_buffer_map (inbuf, &in_map_info, GST_MAP_READ)) {
+    g_error ("Error: Failed to map gst buffer\n");
+  }
+  surface = (NvBufSurface *) in_map_info.data;
 
   static guint use_device_mem = 0;
 
   NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta (inbuf);
 
+#ifndef PLATFORM_TEGRA
+  if (surface->memType != NVBUF_MEM_CUDA_UNIFIED){
+    g_error ("need NVBUF_MEM_CUDA_UNIFIED memory for opencv\n");
+  }
+#endif
+
   for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame=l_frame->next) {
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) l_frame->data;
+    cv::Mat in_mat;
+    if (surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0] == NULL){
+      if (NvBufSurfaceMap (surface, frame_meta->batch_id, 0, NVBUF_MAP_READ_WRITE) != 0){
+        g_error ("buffer map to be accessed by CPU failed\n");
+      }
+    }
+    /* Cache the mapped data for CPU access */
+    NvBufSurfaceSyncForCpu (surface, frame_meta->batch_id, 0);
+    in_mat =
+      cv::Mat (surface->surfaceList[frame_meta->batch_id].planeParams.height[0],
+      surface->surfaceList[frame_meta->batch_id].planeParams.width[0], CV_8UC4,
+      surface->surfaceList[frame_meta->batch_id].mappedAddr.addr[0],
+      surface->surfaceList[frame_meta->batch_id].planeParams.pitch[0]);
 
     for (NvDsMetaList * l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj=l_obj->next) {
       NvDsObjectMeta *obj_meta = (NvDsObjectMeta *) l_obj->data;
+      NvOSD_RectParams & sgie_rect_params = obj_meta->sgie_rect_params;
+      cv::Rect face_rect = cv::Rect (sgie_rect_params.left , sgie_rect_params.top, sgie_rect_params.width, sgie_rect_params.height);
 
-      NvOSD_RectParams & rect_params = obj_meta->rect_params;
-      // std::cout << rect_params.left << "==22222==" << rect_params.top << std::endl;
+      cv::Mat face_img = in_mat(face_rect);
+      std::string encoded = mat_encode(face_img);
 
       for (NvDsMetaList * l_user = obj_meta->obj_user_meta_list; l_user != NULL; l_user = l_user->next) {
         NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
@@ -338,6 +362,7 @@ static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
         msg_meta->objType = NVDS_OBJECT_TYPE_FACE;
         NvDsFaceObject *obj = (NvDsFaceObject *) g_malloc0 (sizeof (NvDsFaceObject));
         obj->emb = g_strdup (binary_b64.c_str());
+        obj->face_img = g_strdup (encoded.c_str());
 
         msg_meta->extMsg = obj;
         msg_meta->extMsgSize = sizeof (NvDsFaceObject);
@@ -353,8 +378,13 @@ static GstPadProbeReturn sgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * 
           g_print ("Error in attaching event meta to buffer\n");
         }
       }
+      NvBufSurfaceSyncForDevice (surface, frame_meta->batch_id, 0);
     }
+
+    NvBufSurfaceUnMap (surface, frame_meta->batch_id, 0);
   }
+  gst_buffer_unmap (inbuf, &in_map_info);
+
   return GST_PAD_PROBE_OK;
 }
 
@@ -452,7 +482,8 @@ int main(int argc, char *argv[]) {
 //   std::cout << PLATFORM_TEGRA << std::endl;
 //   return 0;
 // #endif
-  // g_setenv ("DS_NEW_BUFAPI", "1", TRUE);
+  g_setenv ("DS_NEW_BUFAPI", "1", TRUE);
+  g_print("BOX_ID: %s\n", box_id);
 
   GOOGLE_PROTOBUF_VERIFY_VERSION;
   GMainLoop *loop = NULL;

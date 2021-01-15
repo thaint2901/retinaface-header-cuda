@@ -669,7 +669,7 @@ generate_schema_message (NvDsMsg2pCtx *ctx, NvDsEventMsgMeta *meta)
   json_object_set_string_member (rootObj, "mdsversion", "1.0");
   json_object_set_string_member (rootObj, "cam_id", meta->camID);
   json_object_set_string_member (rootObj, "@timestamp", meta->ts);
-  // json_object_set_string_member (rootObj, "emb", meta->emb);
+  json_object_set_string_member (rootObj, "face_img", dsObj->face_img);
   // json_object_set_object_member (rootObj, "place", placeObj);
   // json_object_set_object_member (rootObj, "sensor", sensorObj);
   // json_object_set_object_member (rootObj, "analyticsModule", analyticsObj);

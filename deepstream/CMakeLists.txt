@@ -53,7 +53,7 @@ if(DEFINED TensorRT_DIR)
   link_directories("${TensorRT_DIR}/lib")
 endif(DEFINED TensorRT_DIR)
 if(DEFINED DeepStream_DIR)
-  include_directories("${DeepStream_DIR}/sources/includes")
+  include_directories("nvdsincludes")
   link_directories("${DeepStream_DIR}/lib")
 endif(DEFINED DeepStream_DIR)
 include_directories(${CUDA_INCLUDE_DIRS})
@@ -80,7 +80,7 @@ target_link_libraries(nvdsparsebbox_retinaface PUBLIC nvinfer nvinfer_plugin ${O
 add_subdirectory(protos)
 
 find_package(Protobuf REQUIRED)
-include_directories(${CMAKE_BINARY_DIR}/protos include)
+include_directories(${CMAKE_BINARY_DIR}/protos includes)
 
 add_library(utils SHARED
   aligner.cpp
